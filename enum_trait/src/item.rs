@@ -1,6 +1,5 @@
 use quote::ToTokens;
 use syn::{
-    ext::IdentExt,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     *,
