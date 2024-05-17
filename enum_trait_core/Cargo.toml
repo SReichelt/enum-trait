@@ -1,0 +1,8 @@
+[package]
+name = "enum_trait_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+enum_trait = { path = "../enum_trait" }
+typenum = { version = "1.17.0", optional = true }
