@@ -213,3 +213,19 @@ impl<E: ToTokens> ToTokens for TypeLevelArm<E> {
         self.comma_token.to_tokens(tokens);
     }
 }
+
+#[derive(Clone)]
+pub struct TypeLevelLambda<E> {
+    pub generics: Generics,
+    pub body: E,
+}
+
+impl<E: Parse> Parse for TypeLevelLambda<E> {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input.parse::<Token![|]>()?;
+        let generics: Generics = input.parse()?;
+        input.parse::<Token![|]>()?;
+        let body: E = input.parse()?;
+        Ok(TypeLevelLambda { generics, body })
+    }
+}

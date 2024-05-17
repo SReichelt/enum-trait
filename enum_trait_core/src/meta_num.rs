@@ -138,6 +138,13 @@ pub mod internal {
     }
 }
 
+#[macro_export]
+macro_rules! meta_num {
+    ($n:literal) => (
+        enum_trait::iterate!($n, $crate::meta_num::Zero, |<N: MetaNum>| $crate::meta_num::Succ<N>)
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use enum_trait::const_test;
@@ -150,158 +157,155 @@ mod tests {
         assert!(Zero::VALUE == 0);
         assert!(<Succ<Zero>>::VALUE == 1);
         assert!(<Succ<Succ<Zero>>>::VALUE == 2);
+        assert!(<meta_num!(0)>::VALUE == 0);
+        assert!(<meta_num!(1)>::VALUE == 1);
+        assert!(<meta_num!(2)>::VALUE == 2);
     }
 
     #[cfg(feature = "typenum")]
     mod typenum_tests {
         use super::*;
 
-        typenum::assert_type_eq!(<Zero as MetaNum>::ToTypeNum, typenum::U0);
-        typenum::assert_type_eq!(<Succ<Zero> as MetaNum>::ToTypeNum, typenum::U1);
-        typenum::assert_type_eq!(<Succ<Succ<Zero>> as MetaNum>::ToTypeNum, typenum::U2);
-        typenum::assert_type_eq!(<Succ<Succ<Succ<Zero>>> as MetaNum>::ToTypeNum, typenum::U3);
-        typenum::assert_type_eq!(
-            <Succ<Succ<Succ<Succ<Zero>>>> as MetaNum>::ToTypeNum,
-            typenum::U4
-        );
-        typenum::assert_type_eq!(
-            <Succ<Succ<Succ<Succ<Succ<Zero>>>>> as MetaNum>::ToTypeNum,
-            typenum::U5
-        );
+        typenum::assert_type_eq!(<meta_num!(0) as MetaNum>::ToTypeNum, typenum::U0);
+        typenum::assert_type_eq!(<meta_num!(1) as MetaNum>::ToTypeNum, typenum::U1);
+        typenum::assert_type_eq!(<meta_num!(2) as MetaNum>::ToTypeNum, typenum::U2);
+        typenum::assert_type_eq!(<meta_num!(3) as MetaNum>::ToTypeNum, typenum::U3);
+        typenum::assert_type_eq!(<meta_num!(4) as MetaNum>::ToTypeNum, typenum::U4);
+        typenum::assert_type_eq!(<meta_num!(5) as MetaNum>::ToTypeNum, typenum::U5);
 
-        typenum::assert_type_eq!(ToMetaNum<typenum::U0>, Zero);
-        typenum::assert_type_eq!(ToMetaNum<typenum::U1>, Succ<Zero>);
-        typenum::assert_type_eq!(ToMetaNum<typenum::U2>, Succ<Succ<Zero>>);
-        typenum::assert_type_eq!(ToMetaNum<typenum::U3>, Succ<Succ<Succ<Zero>>>);
-        typenum::assert_type_eq!(ToMetaNum<typenum::U4>, Succ<Succ<Succ<Succ<Zero>>>>);
+        typenum::assert_type_eq!(ToMetaNum<typenum::U0>, meta_num!(0));
+        typenum::assert_type_eq!(ToMetaNum<typenum::U1>, meta_num!(1));
+        typenum::assert_type_eq!(ToMetaNum<typenum::U2>, meta_num!(2));
+        typenum::assert_type_eq!(ToMetaNum<typenum::U3>, meta_num!(3));
+        typenum::assert_type_eq!(ToMetaNum<typenum::U4>, meta_num!(4));
     }
 
     #[const_test]
     const fn even() {
-        assert!(<Zero as MetaNum>::IsEven::VALUE);
-        assert!(!<Succ<Zero> as MetaNum>::IsEven::VALUE);
-        assert!(<Succ<Succ<Zero>> as MetaNum>::IsEven::VALUE);
-        assert!(!<Succ<Succ<Succ<Zero>>> as MetaNum>::IsEven::VALUE);
+        assert!(<meta_num!(0) as MetaNum>::IsEven::VALUE);
+        assert!(!<meta_num!(1) as MetaNum>::IsEven::VALUE);
+        assert!(<meta_num!(2) as MetaNum>::IsEven::VALUE);
+        assert!(!<meta_num!(3) as MetaNum>::IsEven::VALUE);
     }
 
     #[const_test]
     const fn odd() {
-        assert!(!<Zero as MetaNum>::IsOdd::VALUE);
-        assert!(<Succ<Zero> as MetaNum>::IsOdd::VALUE);
-        assert!(!<Succ<Succ<Zero>> as MetaNum>::IsOdd::VALUE);
-        assert!(<Succ<Succ<Succ<Zero>>> as MetaNum>::IsOdd::VALUE);
+        assert!(!<meta_num!(0) as MetaNum>::IsOdd::VALUE);
+        assert!(<meta_num!(1) as MetaNum>::IsOdd::VALUE);
+        assert!(!<meta_num!(2) as MetaNum>::IsOdd::VALUE);
+        assert!(<meta_num!(3) as MetaNum>::IsOdd::VALUE);
     }
 
     #[const_test]
     const fn op_add() {
-        assert!(<Add<Zero, Zero>>::VALUE == 0);
-        assert!(<Add<Zero, Succ<Zero>>>::VALUE == 1);
-        assert!(<Add<Succ<Zero>, Zero>>::VALUE == 1);
-        assert!(<Add<Succ<Zero>, Succ<Zero>>>::VALUE == 2);
-        assert!(<Add<Succ<Succ<Succ<Zero>>>, Succ<Succ<Zero>>>>::VALUE == 5);
+        assert!(<Add<meta_num!(0), meta_num!(0)>>::VALUE == 0);
+        assert!(<Add<meta_num!(0), meta_num!(1)>>::VALUE == 1);
+        assert!(<Add<meta_num!(1), meta_num!(0)>>::VALUE == 1);
+        assert!(<Add<meta_num!(1), meta_num!(1)>>::VALUE == 2);
+        assert!(<Add<meta_num!(3), meta_num!(2)>>::VALUE == 5);
     }
 
     #[const_test]
     const fn op_mul() {
-        assert!(<Mul<Zero, Zero>>::VALUE == 0);
-        assert!(<Mul<Zero, Succ<Zero>>>::VALUE == 0);
-        assert!(<Mul<Succ<Zero>, Zero>>::VALUE == 0);
-        assert!(<Mul<Succ<Zero>, Succ<Zero>>>::VALUE == 1);
-        assert!(<Mul<Succ<Zero>, Succ<Succ<Zero>>>>::VALUE == 2);
-        assert!(<Mul<Succ<Succ<Zero>>, Succ<Zero>>>::VALUE == 2);
-        assert!(<Mul<Succ<Succ<Zero>>, Succ<Succ<Zero>>>>::VALUE == 4);
-        assert!(<Mul<Succ<Succ<Succ<Zero>>>, Succ<Succ<Zero>>>>::VALUE == 6);
+        assert!(<Mul<meta_num!(0), meta_num!(0)>>::VALUE == 0);
+        assert!(<Mul<meta_num!(0), meta_num!(1)>>::VALUE == 0);
+        assert!(<Mul<meta_num!(1), meta_num!(0)>>::VALUE == 0);
+        assert!(<Mul<meta_num!(1), meta_num!(1)>>::VALUE == 1);
+        assert!(<Mul<meta_num!(1), meta_num!(2)>>::VALUE == 2);
+        assert!(<Mul<meta_num!(2), meta_num!(1)>>::VALUE == 2);
+        assert!(<Mul<meta_num!(2), meta_num!(2)>>::VALUE == 4);
+        assert!(<Mul<meta_num!(3), meta_num!(2)>>::VALUE == 6);
     }
 
     #[const_test]
     const fn op_pow() {
-        assert!(<Pow<Zero, Zero>>::VALUE == 1);
-        assert!(<Pow<Zero, Succ<Zero>>>::VALUE == 0);
-        assert!(<Pow<Succ<Zero>, Zero>>::VALUE == 1);
-        assert!(<Pow<Succ<Zero>, Succ<Zero>>>::VALUE == 1);
-        assert!(<Pow<Succ<Zero>, Succ<Succ<Zero>>>>::VALUE == 1);
-        assert!(<Pow<Succ<Succ<Zero>>, Succ<Zero>>>::VALUE == 2);
-        assert!(<Pow<Succ<Succ<Zero>>, Succ<Succ<Zero>>>>::VALUE == 4);
-        assert!(<Pow<Succ<Succ<Succ<Zero>>>, Succ<Succ<Zero>>>>::VALUE == 9);
+        assert!(<Pow<meta_num!(0), meta_num!(0)>>::VALUE == 1);
+        assert!(<Pow<meta_num!(0), meta_num!(1)>>::VALUE == 0);
+        assert!(<Pow<meta_num!(1), meta_num!(0)>>::VALUE == 1);
+        assert!(<Pow<meta_num!(1), meta_num!(1)>>::VALUE == 1);
+        assert!(<Pow<meta_num!(1), meta_num!(2)>>::VALUE == 1);
+        assert!(<Pow<meta_num!(2), meta_num!(1)>>::VALUE == 2);
+        assert!(<Pow<meta_num!(2), meta_num!(2)>>::VALUE == 4);
+        assert!(<Pow<meta_num!(3), meta_num!(2)>>::VALUE == 9);
     }
 
     #[const_test]
     const fn op_equal() {
-        assert!(<Equal<Zero, Zero>>::VALUE);
-        assert!(!<Equal<Zero, Succ<Zero>>>::VALUE);
-        assert!(!<Equal<Zero, Succ<Succ<Zero>>>>::VALUE);
-        assert!(!<Equal<Succ<Zero>, Zero>>::VALUE);
-        assert!(<Equal<Succ<Zero>, Succ<Zero>>>::VALUE);
-        assert!(!<Equal<Succ<Zero>, Succ<Succ<Zero>>>>::VALUE);
-        assert!(!<Equal<Succ<Zero>, Succ<Succ<Succ<Zero>>>>>::VALUE);
-        assert!(!<Equal<Succ<Succ<Zero>>, Zero>>::VALUE);
-        assert!(!<Equal<Succ<Succ<Zero>>, Succ<Zero>>>::VALUE);
-        assert!(<Equal<Succ<Succ<Zero>>, Succ<Succ<Zero>>>>::VALUE);
-        assert!(!<Equal<Succ<Succ<Zero>>, Succ<Succ<Succ<Zero>>>>>::VALUE);
+        assert!(<Equal<meta_num!(0), meta_num!(0)>>::VALUE);
+        assert!(!<Equal<meta_num!(0), meta_num!(1)>>::VALUE);
+        assert!(!<Equal<meta_num!(0), meta_num!(2)>>::VALUE);
+        assert!(!<Equal<meta_num!(1), meta_num!(0)>>::VALUE);
+        assert!(<Equal<meta_num!(1), meta_num!(1)>>::VALUE);
+        assert!(!<Equal<meta_num!(1), meta_num!(2)>>::VALUE);
+        assert!(!<Equal<meta_num!(1), meta_num!(3)>>::VALUE);
+        assert!(!<Equal<meta_num!(2), meta_num!(0)>>::VALUE);
+        assert!(!<Equal<meta_num!(2), meta_num!(1)>>::VALUE);
+        assert!(<Equal<meta_num!(2), meta_num!(2)>>::VALUE);
+        assert!(!<Equal<meta_num!(2), meta_num!(3)>>::VALUE);
     }
 
     #[const_test]
     const fn op_less_than() {
-        assert!(!<LessThan<Zero, Zero>>::VALUE);
-        assert!(<LessThan<Zero, Succ<Zero>>>::VALUE);
-        assert!(<LessThan<Zero, Succ<Succ<Zero>>>>::VALUE);
-        assert!(!<LessThan<Succ<Zero>, Zero>>::VALUE);
-        assert!(!<LessThan<Succ<Zero>, Succ<Zero>>>::VALUE);
-        assert!(<LessThan<Succ<Zero>, Succ<Succ<Zero>>>>::VALUE);
-        assert!(<LessThan<Succ<Zero>, Succ<Succ<Succ<Zero>>>>>::VALUE);
-        assert!(!<LessThan<Succ<Succ<Zero>>, Zero>>::VALUE);
-        assert!(!<LessThan<Succ<Succ<Zero>>, Succ<Zero>>>::VALUE);
-        assert!(!<LessThan<Succ<Succ<Zero>>, Succ<Succ<Zero>>>>::VALUE);
-        assert!(<LessThan<Succ<Succ<Zero>>, Succ<Succ<Succ<Zero>>>>>::VALUE);
+        assert!(!<LessThan<meta_num!(0), meta_num!(0)>>::VALUE);
+        assert!(<LessThan<meta_num!(0), meta_num!(1)>>::VALUE);
+        assert!(<LessThan<meta_num!(0), meta_num!(2)>>::VALUE);
+        assert!(!<LessThan<meta_num!(1), meta_num!(0)>>::VALUE);
+        assert!(!<LessThan<meta_num!(1), meta_num!(1)>>::VALUE);
+        assert!(<LessThan<meta_num!(1), meta_num!(2)>>::VALUE);
+        assert!(<LessThan<meta_num!(1), meta_num!(3)>>::VALUE);
+        assert!(!<LessThan<meta_num!(2), meta_num!(0)>>::VALUE);
+        assert!(!<LessThan<meta_num!(2), meta_num!(1)>>::VALUE);
+        assert!(!<LessThan<meta_num!(2), meta_num!(2)>>::VALUE);
+        assert!(<LessThan<meta_num!(2), meta_num!(3)>>::VALUE);
     }
 
     #[const_test]
     const fn op_less_or_equal() {
-        assert!(<LessOrEqual<Zero, Zero>>::VALUE);
-        assert!(<LessOrEqual<Zero, Succ<Zero>>>::VALUE);
-        assert!(<LessOrEqual<Zero, Succ<Succ<Zero>>>>::VALUE);
-        assert!(!<LessOrEqual<Succ<Zero>, Zero>>::VALUE);
-        assert!(<LessOrEqual<Succ<Zero>, Succ<Zero>>>::VALUE);
-        assert!(<LessOrEqual<Succ<Zero>, Succ<Succ<Zero>>>>::VALUE);
-        assert!(<LessOrEqual<Succ<Zero>, Succ<Succ<Succ<Zero>>>>>::VALUE);
-        assert!(!<LessOrEqual<Succ<Succ<Zero>>, Zero>>::VALUE);
-        assert!(!<LessOrEqual<Succ<Succ<Zero>>, Succ<Zero>>>::VALUE);
-        assert!(<LessOrEqual<Succ<Succ<Zero>>, Succ<Succ<Zero>>>>::VALUE);
-        assert!(<LessOrEqual<Succ<Succ<Zero>>, Succ<Succ<Succ<Zero>>>>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(0), meta_num!(0)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(0), meta_num!(1)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(0), meta_num!(2)>>::VALUE);
+        assert!(!<LessOrEqual<meta_num!(1), meta_num!(0)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(1), meta_num!(1)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(1), meta_num!(2)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(1), meta_num!(3)>>::VALUE);
+        assert!(!<LessOrEqual<meta_num!(2), meta_num!(0)>>::VALUE);
+        assert!(!<LessOrEqual<meta_num!(2), meta_num!(1)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(2), meta_num!(2)>>::VALUE);
+        assert!(<LessOrEqual<meta_num!(2), meta_num!(3)>>::VALUE);
     }
 
     #[const_test]
     const fn op_greater_than() {
-        assert!(!<GreaterThan<Zero, Zero>>::VALUE);
-        assert!(!<GreaterThan<Zero, Succ<Zero>>>::VALUE);
-        assert!(<GreaterThan<Succ<Zero>, Zero>>::VALUE);
-        assert!(!<GreaterThan<Succ<Zero>, Succ<Zero>>>::VALUE);
+        assert!(!<GreaterThan<meta_num!(0), meta_num!(0)>>::VALUE);
+        assert!(!<GreaterThan<meta_num!(0), meta_num!(1)>>::VALUE);
+        assert!(<GreaterThan<meta_num!(1), meta_num!(0)>>::VALUE);
+        assert!(!<GreaterThan<meta_num!(1), meta_num!(1)>>::VALUE);
     }
 
     #[const_test]
     const fn op_greater_or_equal() {
-        assert!(<GreaterOrEqual<Zero, Zero>>::VALUE);
-        assert!(!<GreaterOrEqual<Zero, Succ<Zero>>>::VALUE);
-        assert!(<GreaterOrEqual<Succ<Zero>, Zero>>::VALUE);
-        assert!(<GreaterOrEqual<Succ<Zero>, Succ<Zero>>>::VALUE);
+        assert!(<GreaterOrEqual<meta_num!(0), meta_num!(0)>>::VALUE);
+        assert!(!<GreaterOrEqual<meta_num!(0), meta_num!(1)>>::VALUE);
+        assert!(<GreaterOrEqual<meta_num!(1), meta_num!(0)>>::VALUE);
+        assert!(<GreaterOrEqual<meta_num!(1), meta_num!(1)>>::VALUE);
     }
 
     #[const_test]
     const fn op_mul2() {
-        assert!(<Mul2<Zero>>::VALUE == 0);
-        assert!(<Mul2<Succ<Zero>>>::VALUE == 2);
-        assert!(<Mul2<Succ<Succ<Zero>>>>::VALUE == 4);
-        assert!(<Mul2<Succ<Succ<Succ<Zero>>>>>::VALUE == 6);
+        assert!(<Mul2<meta_num!(0)>>::VALUE == 0);
+        assert!(<Mul2<meta_num!(1)>>::VALUE == 2);
+        assert!(<Mul2<meta_num!(2)>>::VALUE == 4);
+        assert!(<Mul2<meta_num!(3)>>::VALUE == 6);
     }
 
     #[const_test]
     const fn op_div2() {
-        assert!(<Div2<Zero>>::VALUE == 0);
-        assert!(<Div2<Succ<Zero>>>::VALUE == 0);
-        assert!(<Div2<Succ<Succ<Zero>>>>::VALUE == 1);
-        assert!(<Div2<Succ<Succ<Succ<Zero>>>>>::VALUE == 1);
-        assert!(<Div2<Succ<Succ<Succ<Succ<Zero>>>>>>::VALUE == 2);
-        assert!(<Div2<Succ<Succ<Succ<Succ<Succ<Zero>>>>>>>::VALUE == 2);
-        assert!(<Div2<Succ<Succ<Succ<Succ<Succ<Succ<Zero>>>>>>>>::VALUE == 3);
+        assert!(<Div2<meta_num!(0)>>::VALUE == 0);
+        assert!(<Div2<meta_num!(1)>>::VALUE == 0);
+        assert!(<Div2<meta_num!(2)>>::VALUE == 1);
+        assert!(<Div2<meta_num!(3)>>::VALUE == 1);
+        assert!(<Div2<meta_num!(4)>>::VALUE == 2);
+        assert!(<Div2<meta_num!(5)>>::VALUE == 2);
+        assert!(<Div2<meta_num!(6)>>::VALUE == 3);
     }
 }

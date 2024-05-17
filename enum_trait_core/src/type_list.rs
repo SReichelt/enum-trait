@@ -55,8 +55,16 @@ meta! {
 macro_rules! type_list {
     [] => ($crate::type_list::Empty);
     [..$List:ty] => ($List);
-    [$Head:ty $(, $($Tail:tt)*)?] =>
-        ($crate::type_list::NonEmpty<$Head, $crate::type_list![$($($Tail)*)?]>);
+    [$Head:ty $(, $($Tail:tt)*)?] => (
+        $crate::type_list::NonEmpty<$Head, $crate::type_list![$($($Tail)*)?]>
+    );
+    [$Item:ty; $n:literal] => (
+        enum_trait::iterate!(
+            $n,
+            $crate::type_list::Empty,
+            |<List: TypeList>| $crate::type_list::NonEmpty<$Item, List>,
+        )
+    );
 }
 
 #[cfg(test)]
@@ -67,6 +75,7 @@ mod tests {
 
     type EmptyTypeList = type_list![];
     type TwoItemTypeList = type_list![str, u8];
+    type ThreeItemTypeList = type_list![bool; 3];
 
     #[const_test]
     const fn properties() {
@@ -75,5 +84,7 @@ mod tests {
         assert!(<EmptyTypeList as TypeList>::Len::VALUE == 0);
         assert!(!<TwoItemTypeList as TypeList>::IsEmpty::VALUE);
         assert!(<TwoItemTypeList as TypeList>::Len::VALUE == 2);
+        assert!(!<ThreeItemTypeList as TypeList>::IsEmpty::VALUE);
+        assert!(<ThreeItemTypeList as TypeList>::Len::VALUE == 3);
     }
 }

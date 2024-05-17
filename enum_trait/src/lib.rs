@@ -1,8 +1,12 @@
+use expr::TypeLevelLambda;
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens, TokenStreamExt};
+use subst::{ParamSubstArg, Substitutable};
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, ItemFn, Result,
+    parse_macro_input,
+    spanned::Spanned,
+    Error, GenericArgument, ItemFn, LitInt, Result, Token, Type,
 };
 
 mod expr;
@@ -26,6 +30,38 @@ impl Parse for MetaBlock {
         let input_list: MetaItemList = input.parse()?;
         let output_list = input_list.output()?;
         Ok(MetaBlock(output_list.into_token_stream()))
+    }
+}
+
+#[proc_macro]
+pub fn iterate(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let iteration = parse_macro_input!(input as TypeIteration);
+    iteration.0.into()
+}
+
+struct TypeIteration(TokenStream);
+
+impl Parse for TypeIteration {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let count: LitInt = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let mut ty: Type = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let lambda: TypeLevelLambda<Type> = input.parse()?;
+        input.parse::<Option<Token![,]>>()?;
+        if lambda.generics.params.len() != 1 {
+            return Err(Error::new(
+                lambda.generics.span(),
+                "exactly one type parameter expected",
+            ));
+        }
+        let param = lambda.generics.params.first().unwrap();
+        for _ in 0..count.base10_parse()? {
+            let mut body = lambda.body.clone();
+            body.substitute(param, ParamSubstArg::Arg(&GenericArgument::Type(ty)))?;
+            ty = body;
+        }
+        Ok(TypeIteration(ty.into_token_stream()))
     }
 }
 
