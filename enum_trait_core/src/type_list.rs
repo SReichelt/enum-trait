@@ -20,12 +20,17 @@ meta! {
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => Succ<Tail::Len>,
         };
 
-        /*pub type ItemAt<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self> {
-            Empty => unreachable!(),
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => match <I> {
-                Zero => Head,
-                Succ<P: MetaNum> => Tail::ItemAt<P>,
-            }
+        /*pub type ItemAt<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self, I> {
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ValidIndex<ItemBound, Tail>> =>
+                Tail::ItemAt<P>,
+        };*/
+
+        /*pub type OptionalItemAt<I: ExtendedIndex<ItemBound, Self>>: OptionalType<ItemBound> = match <Self, I> {
+            Empty, Zero => NoType,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => SomeType(Head),
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
+                Tail::OptionalItemAt<P>,
         };*/
 
         /*pub type MapToRefs<'a>: SizedTypeList<Deref<Target: ItemBound> + 'a> = match <Self> {
@@ -34,21 +39,41 @@ meta! {
         };*/
     }
 
-    /*pub trait ValidIndex<trait ItemBound: Sized, L: TypeList<ItemBound>> =
-        MetaNumLessThan<L::Len>;
+    /*
+    pub trait ValidIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
+        MetaNumLessThan<List::Len>;
+
+    pub trait ExtendedIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
+        MetaNumLessOrEqual<List::Len>;
 
     pub trait SizedTypeList<trait ItemBound: Sized> = TypeList<ItemBound>;
 
-    trait impl<trait ItemBound: Sized> SizedTypeList<ItemBound> {
-        pub type NestedTupleWith<T: Sized>: Sized = match <Self> {
+    pub type NestedTupleWith<trait ItemBound: Sized, List: SizedTypeList<ItemBound>, T: Sized>: Sized =
+        match <List> {
             Empty => T,
-            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>> => (Head, Tail::NestedTupleWith<T>),
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>> =>
+                (Head, NestedTupleWith<ItemBound, List, T>),
         };
 
-        pub type NestedTuple: Sized = Self::NestedTupleWith<()>;
+    pub type NestedTuple<trait ItemBound: Sized, List: SizedTypeList<ItemBound>>: Sized =
+        NestedTupleWith<ItemBound, List, ()>;
 
-        // TODO: tuple accessor
-    }*/
+    pub fn get_nested_tuple_item<
+        trait ItemBound: Sized,
+        List: SizedTypeList<ItemBound>,
+        T: Sized,
+        I: ExtendedIndex<ItemBound, List>
+    >(
+        tuple: &NestedTupleWith<ItemBound, List, T>,
+    ) -> &<List::OptionalItemAt<I> as OptionalType<ItemBound>>::UnwrapOr<T> {
+        match <List, I> {
+            Empty, Zero => tuple,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => &tuple.0,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
+                get_nested_tuple_item<ItemBound, Tail, T, P>(&tuple.1),
+        }
+    }
+    */
 }
 
 #[macro_export]

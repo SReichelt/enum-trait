@@ -71,28 +71,26 @@ impl MetaItemList {
                     }
                 }
 
-                MetaItem::Type(type_fn_item) => {
-                    let context = GenericsContext::WithGenerics(
-                        &type_fn_item.generics,
-                        &GenericsContext::Empty,
-                    );
+                MetaItem::Type(type_item) => {
+                    let context =
+                        GenericsContext::WithGenerics(&type_item.generics, &GenericsContext::Empty);
                     // TODO: make sure that expr does not reference Self
                     let ty = result.convert_type_level_expr_type(
-                        type_fn_item.expr.clone(),
+                        type_item.expr.clone(),
                         &context,
-                        &type_fn_item.bounds,
+                        &type_item.bounds,
                     )?;
-                    let mut attrs = type_fn_item.attrs.clone();
+                    let mut attrs = OutputMetaItemList::code_item_attrs(type_item.attrs.clone());
                     // Note: We could strip type bounds instead of silencing the warning, but it
                     // would cause some IDE navigation and syntax highlighting to fail because the
                     // input spans would no longer be associated with anything in our output.
                     attrs.push(parse_quote!(#[allow(type_alias_bounds)]));
                     result.0.push(OutputMetaItem::Type(ItemType {
                         attrs,
-                        vis: type_fn_item.vis.clone(),
-                        type_token: type_fn_item.type_token.clone(),
-                        ident: type_fn_item.ident.clone(),
-                        generics: type_fn_item.generics.clone(),
+                        vis: type_item.vis.clone(),
+                        type_token: type_item.type_token.clone(),
+                        ident: type_item.ident.clone(),
+                        generics: type_item.generics.clone(),
                         eq_token: Default::default(),
                         ty: Box::new(ty),
                         semi_token: Default::default(),

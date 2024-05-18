@@ -99,20 +99,63 @@ meta! {
         Succ<P: MetaNum> => Succ<Div2<P>>,
     };
 
-    /*pub trait MetaNumLessThan<N: MetaNum> = MetaNum[|M| LessThan<M, N>::VALUE];
+    /*pub trait MetaNumNonZero = MetaNum where Self::IsZero = False;
 
-    pub trait MetaNumLessOrEqual<N: MetaNum>: MetaNum[|M| LessOrEqual<M, N>::VALUE];
+    pub type Pred<P: MetaNumNonZero>: MetaNum = match <P> {
+        Succ<N: MetaNum> => N,
+    };
 
-    pub type Sub<M: MetaNum, N: MetaNumLessOrEqual<M>>: MetaNumLessOrEqual<M> = match <N> {
-        Zero => M,
-        Succ<P: MetaNum> => match <M> {
-            Zero => unreachable!(),
-            Succ<O: MetaNum> => Sub<O, P>,
-        }
+    pub trait MetaNumLessThan<N: MetaNum> = MetaNum where LessThan<Self, N> = True;
+
+    pub type SubLess<M: MetaNum, N: MetaNumLessThan<M>>: MetaNumNonZero = match <M, N> {
+        Succ<O: MetaNum>, Zero => Succ<O>,
+        Succ<O: MetaNum>, Succ<P: MetaNumLessThan<O>> => SubLess<O, P>,
+    };
+
+    pub trait MetaNumLessOrEqual<N: MetaNum> = MetaNum where LessOrEqual<Self, N> = True;
+
+    pub type Sub<M: MetaNum, N: MetaNumLessOrEqual<M>>: MetaNum = match <M, N> {
+        _, Zero => M,
+        Succ<O: MetaNum>, Succ<P: MetaNumLessOrEqual<O>> => Sub<O, P>,
     };*/
 }
 
-#[cfg(feature = "typenum")]
+mod testing {
+    use super::*;
+
+    pub trait MetaNumNonZero: MetaNum {
+        type Pred: MetaNum;
+    }
+
+    impl<N: MetaNum> MetaNumNonZero for Succ<N> {
+        type Pred = N;
+    }
+
+    pub trait MetaNumLessThan<M: MetaNum>: MetaNum {
+        type SubFromM: MetaNumNonZero;
+    }
+
+    impl<O: MetaNum> MetaNumLessThan<Succ<O>> for Zero {
+        type SubFromM = Succ<O>;
+    }
+
+    impl<O: MetaNum, P: MetaNumLessThan<O>> MetaNumLessThan<Succ<O>> for Succ<P> {
+        type SubFromM = <P as MetaNumLessThan<O>>::SubFromM;
+    }
+
+    pub trait MetaNumLessOrEqual<M: MetaNum>: MetaNum {
+        type SubFromM: MetaNum;
+    }
+
+    impl<M: MetaNum> MetaNumLessOrEqual<M> for Zero {
+        type SubFromM = M;
+    }
+
+    impl<O: MetaNum, P: MetaNumLessOrEqual<O>> MetaNumLessOrEqual<Succ<O>> for Succ<P> {
+        type SubFromM = <P as MetaNumLessOrEqual<O>>::SubFromM;
+    }
+}
+
 pub type ToMetaNum<N> = <N as internal::ToMetaNum>::ToMetaNum;
 
 pub mod internal {
@@ -120,6 +163,10 @@ pub mod internal {
 
     pub trait ToMetaNum {
         type ToMetaNum: MetaNum;
+    }
+
+    impl ToMetaNum for () {
+        type ToMetaNum = Zero;
     }
 
     #[cfg(feature = "typenum")]
@@ -178,6 +225,7 @@ mod tests {
         typenum::assert_type_eq!(ToMetaNum<typenum::U2>, meta_num!(2));
         typenum::assert_type_eq!(ToMetaNum<typenum::U3>, meta_num!(3));
         typenum::assert_type_eq!(ToMetaNum<typenum::U4>, meta_num!(4));
+        typenum::assert_type_eq!(ToMetaNum<typenum::U5>, meta_num!(5));
     }
 
     #[const_test]
@@ -226,6 +274,7 @@ mod tests {
         assert!(<Pow<meta_num!(1), meta_num!(2)>>::VALUE == 1);
         assert!(<Pow<meta_num!(2), meta_num!(1)>>::VALUE == 2);
         assert!(<Pow<meta_num!(2), meta_num!(2)>>::VALUE == 4);
+        assert!(<Pow<meta_num!(2), meta_num!(3)>>::VALUE == 8);
         assert!(<Pow<meta_num!(3), meta_num!(2)>>::VALUE == 9);
     }
 

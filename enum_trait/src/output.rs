@@ -35,21 +35,20 @@ impl<'a> OutputMetaItemList<'a> {
         item: TraitImplItem,
         context: &GenericsContext,
     ) -> Result<(TraitItem, Option<(Vec<OutputTraitVariant>, Span)>)> {
-        // TODO: Prefix non-public items with underscores.
         match item {
-            TraitImplItem::Const(const_fn_item) => {
+            TraitImplItem::Const(const_item) => {
                 let mut trait_item = TraitItemConst {
-                    attrs: const_fn_item.attrs.clone(),
-                    const_token: const_fn_item.const_token.clone(),
-                    ident: const_fn_item.ident.clone(),
-                    generics: const_fn_item.generics.clone(),
+                    attrs: Self::trait_item_attrs(const_item.attrs.clone(), &const_item.vis),
+                    const_token: const_item.const_token.clone(),
+                    ident: const_item.ident.clone(),
+                    generics: const_item.generics.clone(),
                     colon_token: Default::default(),
-                    ty: const_fn_item.ty.clone(),
+                    ty: const_item.ty.clone(),
                     default: None,
                     semi_token: Default::default(),
                 };
                 let mut variants = None;
-                match const_fn_item.expr {
+                match const_item.expr {
                     TypeLevelExpr::Expr(expr) => {
                         trait_item.default = Some((Default::default(), expr));
                     }
@@ -70,14 +69,14 @@ impl<'a> OutputMetaItemList<'a> {
                                     panic!("todo: const fn not canonicalized (expected expr body)");
                                 };
                                 let impl_item = ImplItemConst {
-                                    attrs: const_fn_item.attrs.clone(),
+                                    attrs: Self::code_item_attrs(const_item.attrs.clone()),
                                     vis: Visibility::Inherited,
                                     defaultness: None,
-                                    const_token: const_fn_item.const_token.clone(),
-                                    ident: const_fn_item.ident.clone(),
-                                    generics: const_fn_item.generics.clone(),
+                                    const_token: const_item.const_token.clone(),
+                                    ident: const_item.ident.clone(),
+                                    generics: const_item.generics.clone(),
                                     colon_token: Default::default(),
-                                    ty: const_fn_item.ty.clone(),
+                                    ty: const_item.ty.clone(),
                                     eq_token: Default::default(),
                                     expr,
                                     semi_token: Default::default(),
@@ -97,19 +96,19 @@ impl<'a> OutputMetaItemList<'a> {
                 };
                 Ok((TraitItem::Const(trait_item), variants))
             }
-            TraitImplItem::Type(type_fn_item) => {
+            TraitImplItem::Type(type_item) => {
                 let mut trait_item = TraitItemType {
-                    attrs: type_fn_item.attrs.clone(),
-                    type_token: type_fn_item.type_token.clone(),
-                    ident: type_fn_item.ident.clone(),
-                    generics: type_fn_item.generics.clone(),
+                    attrs: Self::trait_item_attrs(type_item.attrs.clone(), &type_item.vis),
+                    type_token: type_item.type_token.clone(),
+                    ident: type_item.ident.clone(),
+                    generics: type_item.generics.clone(),
                     colon_token: Default::default(),
-                    bounds: type_fn_item.bounds.clone(),
+                    bounds: type_item.bounds.clone(),
                     default: None,
                     semi_token: Default::default(),
                 };
                 let mut variants = None;
-                match type_fn_item.expr {
+                match type_item.expr {
                     TypeLevelExpr::Expr(ty) => {
                         // TODO: Don't do this if we know variants, as it is unstable.
                         trait_item.default = Some((Default::default(), ty));
@@ -123,7 +122,7 @@ impl<'a> OutputMetaItemList<'a> {
                             "todo: type fn not canonicalized (expected Self)"
                         );
                         let item_context =
-                            GenericsContext::WithGenerics(&type_fn_item.generics, &context);
+                            GenericsContext::WithGenerics(&type_item.generics, &context);
                         let variants_span = match_expr.span();
                         let variants_impls = match_expr
                             .arms
@@ -136,15 +135,15 @@ impl<'a> OutputMetaItemList<'a> {
                                 let ty = self.convert_type_level_expr_type(
                                     arm.body,
                                     &body_context,
-                                    &type_fn_item.bounds,
+                                    &type_item.bounds,
                                 )?;
                                 let impl_item = ImplItemType {
-                                    attrs: type_fn_item.attrs.clone(),
+                                    attrs: Self::code_item_attrs(type_item.attrs.clone()),
                                     vis: Visibility::Inherited,
                                     defaultness: None,
-                                    type_token: type_fn_item.type_token.clone(),
-                                    ident: type_fn_item.ident.clone(),
-                                    generics: type_fn_item.generics.clone(),
+                                    type_token: type_item.type_token.clone(),
+                                    ident: type_item.ident.clone(),
+                                    generics: type_item.generics.clone(),
                                     eq_token: Default::default(),
                                     ty,
                                     semi_token: Default::default(),
@@ -210,7 +209,7 @@ impl<'a> OutputMetaItemList<'a> {
         };
         let trait_def_item = self.trait_def_item(trait_ident)?;
         let impl_context = trait_def_item.impl_context();
-        let type_fn_ident = Ident::new(
+        let trait_item_ident = Ident::new(
             &format!("__{}", trait_def_item.next_internal_item_idx),
             match_ident.span(),
         );
@@ -220,7 +219,7 @@ impl<'a> OutputMetaItemList<'a> {
                 attrs: Vec::new(),
                 vis: Visibility::Inherited,
                 type_token: Default::default(),
-                ident: type_fn_ident.clone(),
+                ident: trait_item_ident.clone(),
                 generics,
                 bounds: return_bounds.clone(),
                 expr: TypeLevelExpr::Match(match_expr),
@@ -231,7 +230,7 @@ impl<'a> OutputMetaItemList<'a> {
         trait_def_item.add_item(trait_item, variants)?;
         let mut segments = trait_bound.path.segments.clone();
         segments.push(PathSegment {
-            ident: type_fn_ident,
+            ident: trait_item_ident,
             arguments,
         });
         Ok(Type::Path(TypePath {
@@ -258,6 +257,21 @@ impl<'a> OutputMetaItemList<'a> {
         }
         type_path.path.get_ident()
     }
+
+    fn trait_item_attrs(mut attrs: Vec<Attribute>, vis: &Visibility) -> Vec<Attribute> {
+        if !matches!(vis, Visibility::Public(_)) {
+            // Hack: We declare private trait items as `deprecated` and use `#[allow(deprecated)]`
+            // internally.
+            attrs.push(parse_quote!(#[deprecated = "private"]));
+            attrs.push(parse_quote!(#[doc(hidden)]));
+        }
+        attrs
+    }
+
+    pub fn code_item_attrs(mut attrs: Vec<Attribute>) -> Vec<Attribute> {
+        attrs.push(parse_quote!(#[allow(deprecated)]));
+        attrs
+    }
 }
 
 impl ToTokens for OutputMetaItemList<'_> {
@@ -265,7 +279,7 @@ impl ToTokens for OutputMetaItemList<'_> {
         for item in &self.0 {
             match item {
                 OutputMetaItem::TraitDef(enum_item) => enum_item.to_tokens(tokens),
-                OutputMetaItem::Type(type_fn_item) => type_fn_item.to_tokens(tokens),
+                OutputMetaItem::Type(type_item) => type_item.to_tokens(tokens),
             }
         }
     }

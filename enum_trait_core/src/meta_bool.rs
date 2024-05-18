@@ -68,7 +68,6 @@ meta! {
 pub type ConstToMetaBool<const B: bool> =
     <internal::ConstBool<B> as internal::ToMetaBool>::ToMetaBool;
 
-#[cfg(feature = "typenum")]
 pub type ToMetaBool<B> = <B as internal::ToMetaBool>::ToMetaBool;
 
 pub mod internal {
