@@ -1,3 +1,5 @@
+use proc_macro2::{Span, TokenTree};
+use quote::ToTokens;
 use std::{borrow::Cow, mem::replace};
 use syn::{punctuated::Punctuated, spanned::Spanned, visit_mut::*, *};
 
@@ -6,7 +8,7 @@ use crate::{expr::*, generics::*};
 pub struct ParamSubst<'a, 'b> {
     pub param: &'a GenericParam,
     pub arg: ParamSubstArg<'b>,
-    pub result: Result<bool>,
+    pub result: Result<Vec<Span>>,
 }
 
 #[derive(Clone, Copy)]
@@ -20,7 +22,7 @@ impl VisitMut for ParamSubst<'_, '_> {
     fn visit_lifetime_mut(&mut self, i: &mut Lifetime) {
         if let GenericParam::Lifetime(lifetime_param) = self.param {
             if i.ident == lifetime_param.lifetime.ident {
-                return self.subst(i, self.arg.get_lifetime());
+                return self.subst(i, self.arg.get_lifetime(i.span()));
             }
         }
         visit_lifetime_mut(self, i)
@@ -31,10 +33,11 @@ impl VisitMut for ParamSubst<'_, '_> {
             let ident = &const_param.ident;
             if let Expr::Path(expr_path) = &i {
                 if expr_path.qself.is_none() && expr_path.path.is_ident(ident) {
-                    return self.subst(i, self.arg.get_expr());
+                    return self.subst(i, self.arg.get_expr(i.span()));
                 }
             } else if !matches!(self.arg, ParamSubstArg::TestOnly) {
-                if let Some(arg) = self.substituted(self.arg.get_expr()) {
+                let span = i.span();
+                if let Some(arg) = self.substituted(self.arg.get_expr(span), span) {
                     let ty = &const_param.ty;
                     *i = parse_quote!({
                         let #ident: #ty = #arg;
@@ -58,7 +61,7 @@ impl VisitMut for ParamSubst<'_, '_> {
         if let GenericParam::Type(type_param) = self.param {
             if let Type::Path(type_path) = &i {
                 if type_path.qself.is_none() && type_path.path.is_ident(&type_param.ident) {
-                    return self.subst(i, self.arg.get_type());
+                    return self.subst(i, self.arg.get_type(i.span()));
                 }
             }
         }
@@ -87,7 +90,8 @@ impl VisitMut for ParamSubst<'_, '_> {
             if let GenericParam::Const(const_param) = self.param {
                 if let Type::Path(type_path) = ty {
                     if type_path.qself.is_none() && type_path.path.is_ident(&const_param.ident) {
-                        if let Some(arg) = self.substituted(self.arg.get_expr()) {
+                        let span = i.span();
+                        if let Some(arg) = self.substituted(self.arg.get_expr(span), span) {
                             *i = GenericArgument::Const(arg);
                         }
                         return;
@@ -104,15 +108,15 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
         ParamSubst {
             param,
             arg,
-            result: Ok(false),
+            result: Ok(Vec::new()),
         }
     }
 
-    fn substituted<T>(&mut self, arg: Result<Option<T>>) -> Option<T> {
+    fn substituted<T>(&mut self, arg: Result<Option<T>>, span: Span) -> Option<T> {
         match arg {
             Ok(arg) => {
                 if let Ok(result) = &mut self.result {
-                    *result = true;
+                    result.push(span);
                 }
                 arg
             }
@@ -125,8 +129,8 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
         }
     }
 
-    fn subst<T>(&mut self, node: &mut T, arg: Result<Option<T>>) {
-        if let Some(arg) = self.substituted(arg) {
+    fn subst<T: ToTokens>(&mut self, node: &mut T, arg: Result<Option<T>>) {
+        if let Some(arg) = self.substituted(arg, node.span()) {
             *node = arg;
         }
     }
@@ -134,24 +138,26 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
     fn subst_with_generics(&mut self, generics: &mut Generics, mut f: impl FnMut(&mut ParamSubst)) {
         // Substitute only if none of our generic parameters shadow `param`.
         if !param_generics_name_conflict(&self.param, generics) {
-            match rename_conflicting_params(
-                generics,
-                |param| match &self.arg {
-                    ParamSubstArg::TestOnly => Ok(false),
-                    ParamSubstArg::Param(arg) => Ok(param_name_conflict(param, arg)),
-                    ParamSubstArg::Arg(arg) => (*arg).clone().references_param(param),
-                },
-                &mut f,
-            ) {
-                Ok(true) => {
-                    if let Ok(result) = &mut self.result {
-                        *result = true;
+            if !matches!(self.arg, ParamSubstArg::TestOnly) {
+                match rename_conflicting_params(
+                    generics,
+                    |param| match &self.arg {
+                        ParamSubstArg::TestOnly => Ok(false),
+                        ParamSubstArg::Param(arg) => Ok(param_name_conflict(param, arg)),
+                        ParamSubstArg::Arg(arg) => (*arg).clone().references_param(param),
+                    },
+                    &mut f,
+                ) {
+                    Ok(true) => {
+                        if let Ok(result) = &mut self.result {
+                            result.push(Span::call_site());
+                        }
                     }
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    if self.result.is_ok() {
-                        self.result = Err(error);
+                    Ok(false) => {}
+                    Err(error) => {
+                        if self.result.is_ok() {
+                            self.result = Err(error);
+                        }
                     }
                 }
             }
@@ -165,11 +171,13 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
             if let GenericParam::Type(type_param) = self.param {
                 if let Some(first) = path.segments.first_mut() {
                     if first.arguments.is_empty() && first.ident == type_param.ident {
+                        let span = first.span();
                         match self.arg {
                             ParamSubstArg::TestOnly => {}
                             ParamSubstArg::Param(arg) => {
                                 if let GenericParam::Type(arg) = arg {
                                     first.ident = arg.ident.clone();
+                                    first.ident.set_span(span);
                                 } else if self.result.is_ok() {
                                     self.result =
                                         Err(Error::new(arg.span(), "non-type arg for type param"));
@@ -207,7 +215,7 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
                             }
                         }
                         if let Ok(result) = &mut self.result {
-                            *result = true;
+                            result.push(span);
                         }
                         return true;
                     }
@@ -219,12 +227,14 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
 }
 
 impl ParamSubstArg<'_> {
-    fn get_lifetime(&self) -> Result<Option<Lifetime>> {
+    fn get_lifetime(&self, span: Span) -> Result<Option<Lifetime>> {
         match self {
             ParamSubstArg::TestOnly => Ok(None),
             ParamSubstArg::Param(arg) => {
                 if let GenericParam::Lifetime(arg) = arg {
-                    Ok(Some(arg.lifetime.clone()))
+                    let mut lifetime = arg.lifetime.clone();
+                    lifetime.set_span(span);
+                    Ok(Some(lifetime))
                 } else {
                     Err(Error::new(
                         arg.span(),
@@ -245,15 +255,17 @@ impl ParamSubstArg<'_> {
         }
     }
 
-    fn get_expr(&self) -> Result<Option<Expr>> {
+    fn get_expr(&self, span: Span) -> Result<Option<Expr>> {
         match self {
             ParamSubstArg::TestOnly => Ok(None),
             ParamSubstArg::Param(arg) => {
                 if let GenericParam::Const(arg) = arg {
+                    let mut ident = arg.ident.clone();
+                    ident.set_span(span);
                     Ok(Some(Expr::Path(ExprPath {
                         attrs: Vec::new(),
                         qself: None,
-                        path: arg.ident.clone().into(),
+                        path: ident.into(),
                     })))
                 } else {
                     Err(Error::new(arg.span(), "non-const arg for const param"))
@@ -269,14 +281,16 @@ impl ParamSubstArg<'_> {
         }
     }
 
-    fn get_type(&self) -> Result<Option<Type>> {
+    fn get_type(&self, span: Span) -> Result<Option<Type>> {
         match self {
             ParamSubstArg::TestOnly => Ok(None),
             ParamSubstArg::Param(arg) => {
                 if let GenericParam::Type(arg) = arg {
+                    let mut ident = arg.ident.clone();
+                    ident.set_span(span);
                     Ok(Some(Type::Path(TypePath {
                         qself: None,
-                        path: arg.ident.clone().into(),
+                        path: ident.into(),
                     })))
                 } else {
                     Err(Error::new(arg.span(), "non-type arg for type param"))
@@ -299,15 +313,30 @@ pub trait Substitutable: Sized {
     fn substitute(&mut self, param: &GenericParam, arg: ParamSubstArg) -> Result<bool> {
         let mut subst = ParamSubst::new(param, arg);
         self.substitute_impl(&mut subst);
-        subst.result
+        let result = subst.result?;
+        Ok(!result.is_empty())
     }
 
+    #[allow(dead_code)]
     fn substitute_all(
         &mut self,
         generics: &Generics,
         args: &AngleBracketedGenericArguments,
     ) -> Result<bool> {
-        let mut substituted = false;
+        let mut generics = generics.clone();
+        let mut cloned_args = args.args.clone();
+        let mut substituted = rename_conflicting_params(
+            &mut generics,
+            |param| {
+                for arg in &mut cloned_args {
+                    if arg.references_param(param)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            },
+            |subst| self.substitute_impl(subst),
+        )?;
         let mut args_iter = args.args.iter();
         for param in &generics.params {
             let Some(arg) = args_iter.next() else {
@@ -322,7 +351,12 @@ pub trait Substitutable: Sized {
     }
 
     fn substitute_all_params(&mut self, generics: &Generics, args: &Generics) -> Result<bool> {
-        let mut substituted = false;
+        let mut generics = generics.clone();
+        let mut substituted = rename_conflicting_params(
+            &mut generics,
+            |param| Ok(param_generics_name_conflict(param, args)),
+            |subst| self.substitute_impl(subst),
+        )?;
         let mut args_iter = args.params.iter();
         for param in &generics.params {
             let Some(arg) = args_iter.next() else {
@@ -336,10 +370,26 @@ pub trait Substitutable: Sized {
         Ok(substituted)
     }
 
-    fn references_param(&mut self, param: &GenericParam) -> Result<bool> {
+    fn get_param_references(&mut self, param: &GenericParam) -> Result<Vec<Span>> {
         let mut subst = ParamSubst::new(param, ParamSubstArg::TestOnly);
         self.substitute_impl(&mut subst);
         subst.result
+    }
+
+    fn references_param(&mut self, param: &GenericParam) -> Result<bool> {
+        let result = self.get_param_references(param)?;
+        Ok(!result.is_empty())
+    }
+}
+
+impl Substitutable for () {
+    fn substitute_impl(&mut self, _subst: &mut ParamSubst) {}
+}
+
+impl<E: Substitutable, F: Substitutable> Substitutable for (E, F) {
+    fn substitute_impl(&mut self, subst: &mut ParamSubst) {
+        self.0.substitute_impl(subst);
+        self.1.substitute_impl(subst);
     }
 }
 
@@ -358,6 +408,20 @@ impl Substitutable for Type {
 impl Substitutable for GenericArgument {
     fn substitute_impl(&mut self, subst: &mut ParamSubst) {
         subst.visit_generic_argument_mut(self);
+    }
+}
+
+impl Substitutable for TypeParamBounds {
+    fn substitute_impl(&mut self, subst: &mut ParamSubst) {
+        for bound in self {
+            subst.visit_type_param_bound_mut(bound);
+        }
+    }
+}
+
+impl Substitutable for Signature {
+    fn substitute_impl(&mut self, subst: &mut ParamSubst) {
+        subst.visit_signature_mut(self);
     }
 }
 
@@ -393,7 +457,12 @@ impl Substitutable for ImplItem {
             ImplItem::Const(item_const) => item_const.substitute_impl(subst),
             ImplItem::Fn(item_fn) => item_fn.substitute_impl(subst),
             ImplItem::Type(item_type) => item_type.substitute_impl(subst),
-            _ => panic!("don't know how to substitute in impl item"),
+            _ => {
+                subst.result = Err(Error::new(
+                    self.span(),
+                    "substitution not supported within this item",
+                ));
+            }
         }
     }
 }
@@ -431,7 +500,7 @@ impl Substitutable for ImplItemType {
     }
 }
 
-fn param_name_conflict(param1: &GenericParam, param2: &GenericParam) -> bool {
+pub fn param_name_conflict(param1: &GenericParam, param2: &GenericParam) -> bool {
     match (param1, param2) {
         (GenericParam::Lifetime(lifetime_param1), GenericParam::Lifetime(lifetime_param2)) => {
             lifetime_param1.lifetime == lifetime_param2.lifetime
@@ -452,14 +521,14 @@ fn param_name_conflict(param1: &GenericParam, param2: &GenericParam) -> bool {
     }
 }
 
-fn param_generics_name_conflict(param: &GenericParam, generics: &Generics) -> bool {
+pub fn param_generics_name_conflict(param: &GenericParam, generics: &Generics) -> bool {
     generics
         .params
         .iter()
         .any(|generic_param| param_name_conflict(param, generic_param))
 }
 
-fn param_context_name_conflict(param: &GenericParam, mut context: &GenericsContext) -> bool {
+pub fn param_context_name_conflict(param: &GenericParam, mut context: &GenericsContext) -> bool {
     loop {
         match context {
             GenericsContext::Empty => return false,
@@ -479,55 +548,152 @@ fn param_context_name_conflict(param: &GenericParam, mut context: &GenericsConte
     }
 }
 
-pub fn rename_conflicting_param(
-    param: &mut GenericParam,
-    mut conflicting: impl FnMut(&GenericParam) -> Result<bool>,
-    mut substitute: impl FnMut(&mut ParamSubst),
-) -> Result<bool> {
-    if conflicting(param)? {
-        let old_param = param.clone();
-        loop {
-            match param {
-                GenericParam::Lifetime(lifetime_param) => {
-                    add_underscore_suffix(&mut lifetime_param.lifetime.ident)
-                }
-                GenericParam::Type(type_param) => add_underscore_suffix(&mut type_param.ident),
-                GenericParam::Const(const_param) => add_underscore_suffix(&mut const_param.ident),
-            }
-            if !conflicting(param)? {
-                break;
-            }
-        }
-        let mut subst = ParamSubst::new(&old_param, ParamSubstArg::Param(param));
-        substitute(&mut subst);
-        subst.result?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
 pub fn rename_conflicting_params(
     generics: &mut Generics,
     mut conflicting: impl FnMut(&GenericParam) -> Result<bool>,
     mut substitute: impl FnMut(&mut ParamSubst),
 ) -> Result<bool> {
     let mut renamed = false;
-    for param in &mut generics.params {
-        renamed |= rename_conflicting_param(param, &mut conflicting, &mut substitute)?;
+    for param_idx in 0..generics.params.len() {
+        let param = &mut generics.params[param_idx];
+        if conflicting(param)? {
+            let old_param = param.clone();
+            loop {
+                match param {
+                    GenericParam::Lifetime(lifetime_param) => {
+                        add_underscore_suffix(&mut lifetime_param.lifetime.ident)
+                    }
+                    GenericParam::Type(type_param) => add_underscore_suffix(&mut type_param.ident),
+                    GenericParam::Const(const_param) => {
+                        add_underscore_suffix(&mut const_param.ident)
+                    }
+                }
+                if !conflicting(param)? {
+                    break;
+                }
+            }
+            let new_param = param.clone();
+            let mut subst = ParamSubst::new(&old_param, ParamSubstArg::Param(&new_param));
+            substitute(&mut subst);
+            subst.visit_generics_mut(generics);
+            subst.result?;
+            renamed = true;
+        }
     }
     Ok(renamed)
+}
+
+pub fn rename_all_params(generics: &mut Generics, target_generics: &Generics) -> Result<()> {
+    rename_conflicting_params(
+        generics,
+        |param| Ok(param_generics_name_conflict(param, target_generics)),
+        |_| {},
+    )?;
+    let mut target_iter = target_generics.params.iter();
+    for param_idx in 0..generics.params.len() {
+        let param = &mut generics.params[param_idx];
+        let Some(target_param) = target_iter.next() else {
+            return Err(Error::new(target_generics.span(), "too few parameters"));
+        };
+        let old_param = param.clone();
+        match param {
+            GenericParam::Lifetime(lifetime_param) => {
+                let GenericParam::Lifetime(target_lifetime_param) = target_param else {
+                    return Err(Error::new(
+                        target_param.span(),
+                        "lifetime parameter expected",
+                    ));
+                };
+                lifetime_param.lifetime.ident = target_lifetime_param.lifetime.ident.clone();
+            }
+            GenericParam::Type(type_param) => {
+                let GenericParam::Type(target_type_param) = target_param else {
+                    return Err(Error::new(target_param.span(), "type parameter expected"));
+                };
+                type_param.ident = target_type_param.ident.clone();
+            }
+            GenericParam::Const(const_param) => {
+                let GenericParam::Const(target_const_param) = target_param else {
+                    return Err(Error::new(target_param.span(), "const parameter expected"));
+                };
+                const_param.ident = target_const_param.ident.clone();
+            }
+        }
+        let mut subst = ParamSubst::new(&old_param, ParamSubstArg::Param(target_param));
+        subst.visit_generics_mut(generics);
+        subst.result?;
+    }
+    if let Some(target_param) = target_iter.next() {
+        return Err(Error::new(target_param.span(), "superfluous parameter"));
+    }
+    Ok(())
+}
+
+pub fn add_underscores_to_all_params(generics: &mut Generics) -> Result<bool> {
+    let generics_copy = generics.clone();
+    rename_conflicting_params(
+        generics,
+        |param| Ok(param_generics_name_conflict(param, &generics_copy)),
+        |_| {},
+    )
 }
 
 fn add_underscore_suffix(ident: &mut Ident) {
     *ident = ident_with_suffix(ident, "_")
 }
 
+// Produces the data that is necessary to extract `expr` into a new object with its own generic
+// parameters: For all parameters from `context` that are referenced in `expr`, adds a corresponding
+// parameter to the returned `Generics` and a corresponding argument to the returned
+// `PathArguments`. `expr` is modified so that references the returned parameters instead of the
+// parameters from the context.
+#[allow(dead_code)]
+pub fn build_indirection<'a>(
+    expr: &mut impl Substitutable,
+    context: &'a GenericsContext<'a>,
+) -> Result<(Generics, PathArguments)> {
+    let (params, args) = build_indirection_contents(expr, context, &GenericsContext::Empty)?;
+    let generics = build_generics(params);
+    let arguments = build_path_arguments(args);
+    Ok((generics, arguments))
+}
+
+fn build_indirection_contents<'a>(
+    expr: &mut impl Substitutable,
+    context: &'a GenericsContext<'a>,
+    conflicting_params: &GenericsContext,
+) -> Result<(
+    Punctuated<GenericParam, Token![,]>,
+    Punctuated<GenericArgument, Token![,]>,
+)> {
+    let (_, params, args) = build_indirection_impl(
+        expr,
+        context,
+        conflicting_params,
+        |_| Ok(()),
+        |_, _, _, _| Ok(None),
+        |_, _, _, _| Ok(None),
+    )?;
+    Ok((params, args))
+}
+
 fn build_indirection_impl<'a, E: Substitutable, R>(
     expr: &mut E,
     context: &'a GenericsContext<'a>,
-    shadowing_params: &GenericsContext,
+    conflicting_params: &GenericsContext,
     on_empty: impl FnOnce(&mut E) -> Result<R>,
+    mut on_self: impl FnMut(
+        &mut E,
+        &'a GenericParam,
+        &'a GenericsContext<'a>,
+        &GenericsContext,
+    ) -> Result<
+        Option<(
+            R,
+            Punctuated<GenericParam, Token![,]>,
+            Punctuated<GenericArgument, Token![,]>,
+        )>,
+    >,
     mut on_generics: impl FnMut(
         &mut E,
         &'a Generics,
@@ -551,146 +717,214 @@ fn build_indirection_impl<'a, E: Substitutable, R>(
             Ok((result, Punctuated::new(), Punctuated::new()))
         }
         GenericsContext::WithSelf(param, next_context) => {
-            let next_shadowing_params =
-                GenericsContext::WithSelf(Cow::Borrowed(param), shadowing_params);
+            if let Some(result) = on_self(expr, param, next_context, conflicting_params)? {
+                return Ok(result);
+            }
+            let next_conflicting_params =
+                GenericsContext::WithSelf(Cow::Borrowed(param), conflicting_params);
             let (result, mut params, mut args) = build_indirection_impl(
                 expr,
                 next_context,
-                &next_shadowing_params,
+                &next_conflicting_params,
                 on_empty,
+                on_self,
                 on_generics,
             )?;
-            add_param_indirection(expr, param, &mut params, &mut args, &next_shadowing_params)?;
+            add_param_indirections(
+                expr,
+                [param.as_ref()].into_iter(),
+                &mut params,
+                &mut args,
+                &next_conflicting_params,
+            )?;
             Ok((result, params, args))
         }
         GenericsContext::WithGenerics(generics, next_context) => {
-            if let Some(result) = on_generics(expr, generics, next_context, shadowing_params)? {
+            if let Some(result) = on_generics(expr, generics, next_context, conflicting_params)? {
                 return Ok(result);
             }
-            let next_shadowing_params = GenericsContext::WithGenerics(generics, shadowing_params);
+            let next_conflicting_params =
+                GenericsContext::WithGenerics(generics, conflicting_params);
             let (result, mut params, mut args) = build_indirection_impl(
                 expr,
                 next_context,
-                &next_shadowing_params,
+                &next_conflicting_params,
                 on_empty,
+                on_self,
                 on_generics,
             )?;
-            for param in &generics.params {
-                add_param_indirection(expr, param, &mut params, &mut args, shadowing_params)?;
-            }
+            add_param_indirections(
+                expr,
+                generics.params.iter(),
+                &mut params,
+                &mut args,
+                conflicting_params,
+            )?;
             Ok((result, params, args))
         }
     }
 }
 
-fn add_param_indirection(
+fn add_param_indirections<'a>(
     expr: &mut impl Substitutable,
-    param: &GenericParam,
+    iter: impl Iterator<Item = &'a GenericParam>,
     params: &mut Punctuated<GenericParam, Token![,]>,
     args: &mut Punctuated<GenericArgument, Token![,]>,
-    shadowing_params: &GenericsContext,
+    conflicting_params: &GenericsContext,
 ) -> Result<()> {
-    if expr.references_param(param)? {
-        let mut param = param.clone();
-        let arg = generic_param_arg(&param);
-        rename_conflicting_param(
-            &mut param,
-            |param| Ok(param_context_name_conflict(param, shadowing_params)),
-            |subst| expr.substitute_impl(subst),
-        )?;
+    let mut referenced_params = Generics::default();
+    for param in iter {
+        // TODO: If a parameter is referenced in the trait bounds of an included parameter, we need
+        // to include the referenced parameter as well, and substitute it in the trait bounds.
+        let param_refs = expr.get_param_references(param)?;
+        if let Some(first_ref_span) = param_refs.first() {
+            referenced_params.params.push(param.clone());
+            args.push(generic_param_arg(param, Some(*first_ref_span)));
+        }
+    }
+    rename_conflicting_params(
+        &mut referenced_params,
+        |param| Ok(param_context_name_conflict(param, conflicting_params)),
+        |subst| expr.substitute_impl(subst),
+    )?;
+    for param in referenced_params.params {
         params.push(param);
-        args.push(arg);
     }
     Ok(())
 }
 
+// Like `build_indirection`, but additionally searches the context for a type parameter with name
+// `param_ident`, replaces references to that parameter with `Self`, and returns the parameter
+// separately.
+// This is useful if the expression must be implemented as an associated type of a trait, which is
+// the case for all match expressions.
 pub fn isolate_type_param<'a>(
     expr: &mut impl Substitutable,
     context: &'a GenericsContext<'a>,
     param_ident: &Ident,
 ) -> Result<(&'a TypeParam, Generics, PathArguments)> {
-    let (type_param, params, args) = build_indirection_impl(
-        expr,
-        context,
-        &GenericsContext::Empty,
-        |_| {
-            Err(Error::new(
-                param_ident.span(),
-                format!("type param '{param_ident}' not found"),
-            ))
-        },
-        |expr, generics, next_context, shadowing_params| {
-            let next_shadowing_params = GenericsContext::WithGenerics(generics, shadowing_params);
-            for (param_idx, param) in generics.params.iter().enumerate() {
+    let (type_param, params, args) =
+        build_indirection_impl(
+            expr,
+            context,
+            &GenericsContext::Empty,
+            |_| {
+                Err(Error::new(
+                    param_ident.span(),
+                    format!("type param `{param_ident}` not found"),
+                ))
+            },
+            |expr, param, next_context, conflicting_params| {
                 match param {
-                    GenericParam::Lifetime(_) => {}
                     GenericParam::Type(type_param) => {
                         if &type_param.ident == param_ident {
-                            let (_, mut params, mut args) = build_indirection_impl(
+                            let next_conflicting_params =
+                                GenericsContext::WithSelf(Cow::Borrowed(param), conflicting_params);
+                            let (params, args) = build_indirection_contents(
                                 expr,
                                 next_context,
-                                &next_shadowing_params,
-                                |_| Ok(()),
-                                |_, _, _, _| Ok(None),
-                            )?;
-                            for (param2_idx, param2) in generics.params.iter().enumerate() {
-                                if param2_idx != param_idx {
-                                    add_param_indirection(
-                                        expr,
-                                        param2,
-                                        &mut params,
-                                        &mut args,
-                                        shadowing_params,
-                                    )?;
-                                }
-                            }
-                            expr.substitute(
-                                param,
-                                ParamSubstArg::Param(&self_type_param(
-                                    param.span(),
-                                    type_param.bounds.clone(),
-                                )),
+                                &next_conflicting_params,
                             )?;
                             return Ok(Some((type_param, params, args)));
                         }
                     }
-                    GenericParam::Const(const_param) => {
-                        if &const_param.ident == param_ident {
-                            return Err(Error::new(
-                                param_ident.span(),
-                                format!(
-                                    "type param expected, but '{param_ident}' is a const param"
-                                ),
-                            ));
+                    _ => unreachable!(),
+                }
+                Ok(None)
+            },
+            |expr, generics, next_context, conflicting_params| {
+                for (param_idx, param) in generics.params.iter().enumerate() {
+                    match param {
+                        GenericParam::Lifetime(_) => {}
+                        GenericParam::Type(type_param) => {
+                            if &type_param.ident == param_ident {
+                                let next_conflicting_params =
+                                    GenericsContext::WithGenerics(generics, conflicting_params);
+                                let (mut params, mut args) = build_indirection_contents(
+                                    expr,
+                                    next_context,
+                                    &next_conflicting_params,
+                                )?;
+                                let self_param =
+                                    self_type_param(param.span(), type_param.bounds.clone());
+                                let conflicting_params_with_self = GenericsContext::WithSelf(
+                                    Cow::Borrowed(&self_param),
+                                    conflicting_params,
+                                );
+                                add_param_indirections(
+                                    expr,
+                                    generics
+                                        .params
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(idx, param)| {
+                                            if idx == param_idx {
+                                                None
+                                            } else {
+                                                Some(param)
+                                            }
+                                        })
+                                        .chain([&self_param].into_iter()),
+                                    &mut params,
+                                    &mut args,
+                                    &conflicting_params_with_self,
+                                )?;
+                                expr.substitute(param, ParamSubstArg::Param(&self_param))?;
+                                return Ok(Some((type_param, params, args)));
+                            }
+                        }
+                        GenericParam::Const(const_param) => {
+                            if &const_param.ident == param_ident {
+                                return Err(Error::new(
+                                    param_ident.span(),
+                                    format!(
+                                        "type param expected, but `{param_ident}` is a const param"
+                                    ),
+                                ));
+                            }
                         }
                     }
                 }
-            }
-            Ok(None)
-        },
-    )?;
-    let (lt_token, gt_token) = if params.is_empty() {
-        (None, None)
-    } else {
-        (Some(Default::default()), Some(Default::default()))
-    };
-    let generics = Generics {
-        lt_token,
-        params,
-        gt_token,
-        where_clause: None,
-    };
-    let arguments = if args.is_empty() {
-        PathArguments::None
-    } else {
-        PathArguments::AngleBracketed(AngleBracketedGenericArguments {
-            colon2_token: None,
-            lt_token: Default::default(),
-            args,
-            gt_token: Default::default(),
-        })
-    };
+                Ok(None)
+            },
+        )?;
+    let generics = build_generics(params);
+    let arguments = build_path_arguments(args);
     Ok((type_param, generics, arguments))
+}
+
+pub fn check_token_equality<T: ToTokens>(actual: &T, expected: &T) -> Result<()> {
+    let actual_tokens = actual.to_token_stream();
+    let expected_tokens = expected.to_token_stream();
+    let mut expected_iter = expected_tokens.into_iter();
+    for actual_token in actual_tokens {
+        let Some(expected_token) = expected_iter.next() else {
+            return Err(Error::new(actual_token.span(), format!("expected end")));
+        };
+        match (&actual_token, &expected_token) {
+            (TokenTree::Group(actual_group), TokenTree::Group(expected_group)) => {
+                check_token_equality(actual_group, expected_group)?
+            }
+            _ => {
+                let actual_token_str = actual_token.to_string();
+                let expected_token_str = expected_token.to_string();
+                if actual_token_str != expected_token_str {
+                    return Err(Error::new(
+                        actual_token.span(),
+                        format!("expected `{expected_token_str}`"),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(expected_token) = expected_iter.next() {
+        let expected_token_str = expected_token.to_string();
+        return Err(Error::new(
+            actual.span(),
+            format!("expected continuation with `{expected_token_str}`"),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -784,6 +1018,10 @@ mod tests {
         assert_subst_type_level_expr(
             parse_quote!(match <B> { C<D, X> => (A, X) }),
             parse_quote!(match <B> { C<D, X_> => (X, X_) }),
+        );
+        assert_subst_type_level_expr(
+            parse_quote!(match <B> { C<D, X, Y: F<X>> => (A, X, Y) }),
+            parse_quote!(match <B> { C<D, X_, Y: F<X_>> => (X, X_, Y) }),
         );
     }
 

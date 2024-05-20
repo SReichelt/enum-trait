@@ -20,6 +20,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum_trait_test"
+version = "0.1.0"
+dependencies = [
+ "enum_trait",
+ "enum_trait_core",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"

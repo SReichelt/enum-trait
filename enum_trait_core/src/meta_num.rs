@@ -192,6 +192,8 @@ macro_rules! meta_num {
     );
 }
 
+pub use meta_num;
+
 #[cfg(test)]
 mod tests {
     use enum_trait::const_test;

@@ -92,6 +92,8 @@ macro_rules! type_list {
     );
 }
 
+pub use type_list;
+
 #[cfg(test)]
 mod tests {
     use enum_trait::const_test;

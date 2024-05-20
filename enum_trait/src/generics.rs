@@ -1,5 +1,6 @@
 use std::{borrow::Cow, mem::take};
 
+use proc_macro2::Span;
 use quote::ToTokens;
 use syn::{
     parse::{Parse, ParseStream},
@@ -7,20 +8,79 @@ use syn::{
     *,
 };
 
-pub fn generic_param_arg(param: &GenericParam) -> GenericArgument {
+pub fn build_generics(params: Punctuated<GenericParam, Token![,]>) -> Generics {
+    let (lt_token, gt_token) = if params.is_empty() {
+        (None, None)
+    } else {
+        (Some(Default::default()), Some(Default::default()))
+    };
+    Generics {
+        lt_token,
+        params,
+        gt_token,
+        where_clause: None,
+    }
+}
+
+pub fn build_path_arguments(args: Punctuated<GenericArgument, Token![,]>) -> PathArguments {
+    if args.is_empty() {
+        PathArguments::None
+    } else {
+        PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+            colon2_token: None,
+            lt_token: Default::default(),
+            args,
+            gt_token: Default::default(),
+        })
+    }
+}
+
+pub fn generic_param_arg(param: &GenericParam, span: Option<Span>) -> GenericArgument {
     match param {
         GenericParam::Lifetime(lifetime_param) => {
-            GenericArgument::Lifetime(lifetime_param.lifetime.clone())
+            let mut lifetime = lifetime_param.lifetime.clone();
+            if let Some(span) = span {
+                lifetime.ident.set_span(span);
+            }
+            GenericArgument::Lifetime(lifetime)
         }
-        GenericParam::Type(type_param) => GenericArgument::Type(Type::Path(TypePath {
-            qself: None,
-            path: type_param.ident.clone().into(),
-        })),
-        GenericParam::Const(const_param) => GenericArgument::Const(Expr::Path(ExprPath {
-            attrs: Default::default(),
-            qself: None,
-            path: const_param.ident.clone().into(),
-        })),
+        GenericParam::Type(type_param) => {
+            let mut ident = type_param.ident.clone();
+            if let Some(span) = span {
+                ident.set_span(span);
+            }
+            GenericArgument::Type(Type::Path(TypePath {
+                qself: None,
+                path: ident.into(),
+            }))
+        }
+        GenericParam::Const(const_param) => {
+            let mut ident = const_param.ident.clone();
+            if let Some(span) = span {
+                ident.set_span(span);
+            }
+            GenericArgument::Type(Type::Path(TypePath {
+                qself: None,
+                path: ident.into(),
+            }))
+        }
+    }
+}
+
+pub fn generic_args(generics: &Generics) -> PathArguments {
+    if generics.params.is_empty() {
+        PathArguments::None
+    } else {
+        let mut args = Punctuated::new();
+        for param in &generics.params {
+            args.push(generic_param_arg(param, None));
+        }
+        PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+            colon2_token: None,
+            lt_token: generics.lt_token.unwrap_or_default(),
+            args,
+            gt_token: generics.gt_token.unwrap_or_default(),
+        })
     }
 }
 
@@ -234,15 +294,16 @@ impl MetaGenerics {
                 }
             }
         }
-        if params.is_empty() {
-            Generics::default()
+        let (lt_token, gt_token) = if params.is_empty() {
+            (None, None)
         } else {
-            Generics {
-                lt_token: self.lt_token.clone(),
-                params,
-                gt_token: self.gt_token.clone(),
-                where_clause: None,
-            }
+            (self.lt_token.clone(), self.gt_token.clone())
+        };
+        Generics {
+            lt_token,
+            params,
+            gt_token,
+            where_clause: None,
         }
     }
 }

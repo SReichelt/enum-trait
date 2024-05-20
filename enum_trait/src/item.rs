@@ -1,11 +1,10 @@
-use quote::ToTokens;
 use syn::{
-    parse::{Parse, ParseStream},
+    parse::{Parse, ParseBuffer, ParseStream},
     punctuated::Punctuated,
     *,
 };
 
-use crate::{expr::*, generics::*, output::*};
+use crate::{expr::*, generics::*, output::*, subst::*};
 
 pub struct MetaItemList(pub Vec<MetaItem>);
 
@@ -32,11 +31,15 @@ impl MetaItemList {
                     variants: Some(
                         variants
                             .iter()
-                            .map(|variant| OutputTraitVariant {
-                                variant: variant.clone(),
-                                impl_items: Vec::new(),
+                            .map(|variant| {
+                                let mut variant = variant.clone();
+                                add_underscores_to_all_params(&mut variant.generics)?;
+                                Ok(OutputTraitVariant {
+                                    variant,
+                                    impl_items: Vec::new(),
+                                })
                             })
-                            .collect(),
+                            .collect::<Result<_>>()?,
                     ),
                     impl_items: Vec::new(),
                     next_internal_item_idx: 0,
@@ -57,15 +60,16 @@ impl MetaItemList {
                     }
                     let segment = impl_item.self_trait.segments.first().unwrap();
                     let trait_def_item = result.trait_def_item(&segment.ident)?;
-                    Self::check_trait_impl_params(
-                        &impl_item.generics,
-                        &trait_def_item.trait_item.generics,
-                    )?;
+                    check_token_equality(&impl_item.generics, &trait_def_item.trait_item.generics)?;
                     Self::check_trait_impl_args(&impl_item.generics, &segment.arguments)?;
                     let impl_context = trait_def_item.impl_context();
+                    let variants_known = trait_def_item.variants.is_some();
                     for item in &impl_item.items {
-                        let (trait_item, variants) =
-                            result.create_trait_item(item.clone(), &impl_context)?;
+                        let (trait_item, variants) = result.create_trait_item(
+                            item.clone(),
+                            &impl_context,
+                            variants_known,
+                        )?;
                         let trait_def_item = result.trait_def_item(&segment.ident)?;
                         trait_def_item.add_item(trait_item, variants)?;
                     }
@@ -74,9 +78,8 @@ impl MetaItemList {
                 MetaItem::Type(type_item) => {
                     let context =
                         GenericsContext::WithGenerics(&type_item.generics, &GenericsContext::Empty);
-                    // TODO: make sure that expr does not reference Self
                     let ty = result.convert_type_level_expr_type(
-                        type_item.expr.clone(),
+                        type_item.ty.clone(),
                         &context,
                         &type_item.bounds,
                     )?;
@@ -85,7 +88,7 @@ impl MetaItemList {
                     // would cause some IDE navigation and syntax highlighting to fail because the
                     // input spans would no longer be associated with anything in our output.
                     attrs.push(parse_quote!(#[allow(type_alias_bounds)]));
-                    result.0.push(OutputMetaItem::Type(ItemType {
+                    result.0.push(OutputMetaItem::Item(Item::Type(ItemType {
                         attrs,
                         vis: type_item.vis.clone(),
                         type_token: type_item.type_token.clone(),
@@ -94,27 +97,33 @@ impl MetaItemList {
                         eq_token: Default::default(),
                         ty: Box::new(ty),
                         semi_token: Default::default(),
-                    }));
+                    })));
+                }
+
+                MetaItem::Fn(fn_item) => {
+                    let context = GenericsContext::WithGenerics(
+                        &fn_item.sig.generics,
+                        &GenericsContext::Empty,
+                    );
+                    let expr = result.convert_type_level_expr_fn(
+                        fn_item.expr.clone(),
+                        &context,
+                        &fn_item.sig,
+                    )?;
+                    result.0.push(OutputMetaItem::Item(Item::Fn(ItemFn {
+                        attrs: OutputMetaItemList::code_item_attrs(fn_item.attrs.clone()),
+                        vis: fn_item.vis.clone(),
+                        sig: fn_item.sig.clone(),
+                        block: Box::new(Block {
+                            brace_token: Default::default(),
+                            stmts: vec![Stmt::Expr(expr, None)],
+                        }),
+                    })));
                 }
             }
         }
 
         Ok(result)
-    }
-
-    fn check_trait_impl_params(
-        impl_item_generics: &MetaGenerics,
-        output_item_generics: &MetaGenerics,
-    ) -> Result<()> {
-        let impl_item_generics_tokens = impl_item_generics.to_token_stream();
-        let output_item_generics_tokens = output_item_generics.to_token_stream();
-        if impl_item_generics_tokens.to_string() != output_item_generics_tokens.to_string() {
-            return Err(Error::new_spanned(
-                &impl_item_generics,
-                "trait impl generics must match trait generics",
-            ));
-        }
-        Ok(())
     }
 
     fn check_trait_impl_args(
@@ -199,6 +208,7 @@ pub enum MetaItem {
     TraitDef(ItemTraitDef),
     TraitImpl(ItemTraitImpl),
     Type(ItemTypeExt),
+    Fn(ItemFnExt),
 }
 
 impl Parse for MetaItem {
@@ -218,6 +228,14 @@ impl Parse for MetaItem {
             return Ok(MetaItem::TraitDef(ItemTraitDef::parse(input, attrs)?));
         } else if lookahead.peek(Token![type]) {
             return Ok(MetaItem::Type(ItemTypeExt::parse(input, attrs)?));
+        } else if lookahead.peek(Token![const]) {
+            ahead.parse::<Token![const]>()?;
+            lookahead = ahead.lookahead1();
+            if lookahead.peek(Token![fn]) {
+                return Ok(MetaItem::Fn(ItemFnExt::parse(input, attrs)?));
+            }
+        } else if lookahead.peek(Token![fn]) {
+            return Ok(MetaItem::Fn(ItemFnExt::parse(input, attrs)?));
         }
         Err(lookahead.error())
     }
@@ -239,7 +257,7 @@ impl ItemTraitDef {
         let trait_token: Token![trait] = input.parse()?;
         let ident: Ident = input.parse()?;
         let generics: MetaGenerics = input.parse()?;
-        let content;
+        let content: ParseBuffer;
         braced!(content in input);
         let variants = content.parse_terminated(TraitVariant::parse, Token![,])?;
         Ok(ItemTraitDef {
@@ -294,7 +312,7 @@ impl ItemTraitImpl {
         let impl_token: Token![impl] = input.parse()?;
         let generics: MetaGenerics = input.parse()?;
         let self_trait: Path = input.parse()?;
-        let content;
+        let content: ParseBuffer;
         braced!(content in input);
         let mut items = Vec::new();
         while !content.is_empty() {
@@ -318,7 +336,7 @@ pub struct ItemTypeExt {
     pub ident: Ident,
     pub generics: Generics,
     pub bounds: TypeParamBounds,
-    pub expr: TypeLevelExpr<Type>,
+    pub ty: TypeLevelExpr<Type>,
 }
 
 impl ItemTypeExt {
@@ -334,15 +352,38 @@ impl ItemTypeExt {
             Punctuated::new()
         };
         input.parse::<Token![=]>()?;
-        let expr: TypeLevelExpr<Type> = input.parse()?;
+        let ty: TypeLevelExpr<Type> = input.parse()?;
         input.parse::<Token![;]>()?;
         Ok(ItemTypeExt {
-            vis,
             attrs,
+            vis,
             type_token,
             ident,
             generics,
             bounds,
+            ty,
+        })
+    }
+}
+
+pub struct ItemFnExt {
+    pub attrs: Vec<Attribute>,
+    pub vis: Visibility,
+    pub sig: Signature,
+    pub expr: TypeLevelExpr<Expr>,
+}
+
+impl ItemFnExt {
+    fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
+        let vis: Visibility = input.parse()?;
+        let sig: Signature = input.parse()?;
+        let content: ParseBuffer;
+        braced!(content in input);
+        let expr: TypeLevelExpr<Expr> = content.parse()?;
+        Ok(ItemFnExt {
+            attrs,
+            vis,
+            sig,
             expr,
         })
     }
@@ -352,6 +393,7 @@ impl ItemTypeExt {
 pub enum TraitImplItem {
     Const(TraitImplItemConst),
     Type(TraitImplItemType),
+    Fn(TraitImplItemFn),
 }
 
 impl Parse for TraitImplItem {
@@ -360,49 +402,23 @@ impl Parse for TraitImplItem {
         let ahead = input.fork();
         ahead.parse::<Visibility>()?;
 
-        let lookahead = ahead.lookahead1();
-        if lookahead.peek(Token![const]) {
-            return Ok(TraitImplItem::Const(TraitImplItemConst::parse(
-                input, attrs,
-            )?));
-        } else if lookahead.peek(Token![type]) {
+        let mut lookahead = ahead.lookahead1();
+        if lookahead.peek(Token![type]) {
             return Ok(TraitImplItem::Type(TraitImplItemType::parse(input, attrs)?));
+        } else if lookahead.peek(Token![const]) {
+            ahead.parse::<Token![const]>()?;
+            lookahead = ahead.lookahead1();
+            if lookahead.peek(Token![fn]) {
+                return Ok(TraitImplItem::Fn(TraitImplItemFn::parse(input, attrs)?));
+            } else {
+                return Ok(TraitImplItem::Const(TraitImplItemConst::parse(
+                    input, attrs,
+                )?));
+            }
+        } else if lookahead.peek(Token![fn]) {
+            return Ok(TraitImplItem::Fn(TraitImplItemFn::parse(input, attrs)?));
         }
         Err(lookahead.error())
-    }
-}
-
-#[derive(Clone)]
-pub struct TraitImplItemConst {
-    pub attrs: Vec<Attribute>,
-    pub vis: Visibility,
-    pub const_token: Token![const],
-    pub ident: Ident,
-    pub generics: Generics,
-    pub ty: Type,
-    pub expr: TypeLevelExpr<Expr>,
-}
-
-impl TraitImplItemConst {
-    fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
-        let vis: Visibility = input.parse()?;
-        let const_token: Token![const] = input.parse()?;
-        let ident: Ident = input.parse()?;
-        let generics: Generics = input.parse()?;
-        input.parse::<Token![:]>()?;
-        let ty: Type = input.parse()?;
-        input.parse::<Token![=]>()?;
-        let expr: TypeLevelExpr<Expr> = input.parse()?;
-        input.parse::<Token![;]>()?;
-        Ok(TraitImplItemConst {
-            vis,
-            attrs,
-            const_token,
-            ident,
-            generics,
-            ty,
-            expr,
-        })
     }
 }
 
@@ -414,7 +430,7 @@ pub struct TraitImplItemType {
     pub ident: Ident,
     pub generics: Generics,
     pub bounds: TypeParamBounds,
-    pub expr: TypeLevelExpr<Type>,
+    pub ty: TypeLevelExpr<Type>,
 }
 
 impl TraitImplItemType {
@@ -430,7 +446,7 @@ impl TraitImplItemType {
             Punctuated::new()
         };
         input.parse::<Token![=]>()?;
-        let expr: TypeLevelExpr<Type> = input.parse()?;
+        let ty: TypeLevelExpr<Type> = input.parse()?;
         input.parse::<Token![;]>()?;
         Ok(TraitImplItemType {
             vis,
@@ -439,6 +455,61 @@ impl TraitImplItemType {
             ident,
             generics,
             bounds,
+            ty,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct TraitImplItemConst {
+    pub attrs: Vec<Attribute>,
+    pub vis: Visibility,
+    pub const_token: Token![const],
+    pub ident: Ident,
+    pub ty: Type,
+    pub expr: TypeLevelExpr<Expr>,
+}
+
+impl TraitImplItemConst {
+    fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
+        let vis: Visibility = input.parse()?;
+        let const_token: Token![const] = input.parse()?;
+        let ident: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let ty: Type = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let expr: TypeLevelExpr<Expr> = input.parse()?;
+        input.parse::<Token![;]>()?;
+        Ok(TraitImplItemConst {
+            vis,
+            attrs,
+            const_token,
+            ident,
+            ty,
+            expr,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct TraitImplItemFn {
+    pub attrs: Vec<Attribute>,
+    pub vis: Visibility,
+    pub sig: Signature,
+    pub expr: TypeLevelExpr<Expr>,
+}
+
+impl TraitImplItemFn {
+    fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
+        let vis: Visibility = input.parse()?;
+        let sig: Signature = input.parse()?;
+        let content: ParseBuffer;
+        braced!(content in input);
+        let expr: TypeLevelExpr<Expr> = content.parse()?;
+        Ok(TraitImplItemFn {
+            attrs,
+            vis,
+            sig,
             expr,
         })
     }
