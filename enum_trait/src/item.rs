@@ -1,6 +1,7 @@
 use syn::{
     parse::{Parse, ParseBuffer, ParseStream},
     punctuated::Punctuated,
+    spanned::Spanned,
     *,
 };
 
@@ -298,9 +299,6 @@ impl Parse for TraitVariant {
 }
 
 pub struct ItemTraitImpl {
-    pub attrs: Vec<Attribute>,
-    pub trait_token: Token![trait],
-    pub impl_token: Token![impl],
     pub generics: MetaGenerics,
     pub self_trait: Path,
     pub items: Vec<TraitImplItem>,
@@ -308,8 +306,14 @@ pub struct ItemTraitImpl {
 
 impl ItemTraitImpl {
     fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
-        let trait_token: Token![trait] = input.parse()?;
-        let impl_token: Token![impl] = input.parse()?;
+        if let Some(first_attr) = attrs.first() {
+            return Err(Error::new(
+                first_attr.span(),
+                "trait impl attributes are not supported",
+            ));
+        }
+        input.parse::<Token![trait]>()?;
+        input.parse::<Token![impl]>()?;
         let generics: MetaGenerics = input.parse()?;
         let self_trait: Path = input.parse()?;
         let content: ParseBuffer;
@@ -319,9 +323,6 @@ impl ItemTraitImpl {
             items.push(content.parse()?);
         }
         Ok(ItemTraitImpl {
-            attrs,
-            trait_token,
-            impl_token,
             generics,
             self_trait,
             items,
