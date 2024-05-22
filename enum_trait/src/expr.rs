@@ -1,7 +1,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, TokenStreamExt};
 use syn::{
-    parse::{Parse, ParseStream},
+    parse::{Parse, ParseBuffer, ParseStream},
     *,
 };
 
@@ -143,7 +143,7 @@ impl<E: ParseExt> Parse for TypeLevelExprMatch<E> {
         let lt_token: Token![<] = input.parse()?;
         let ty: Type = input.parse()?;
         let gt_token: Token![>] = input.parse()?;
-        let content;
+        let content: ParseBuffer;
         let brace_token = braced!(content in input);
         let mut arms = Vec::new();
         while !content.is_empty() {
@@ -183,7 +183,13 @@ pub struct TypeLevelArm<E> {
 
 impl<E: ParseExt> Parse for TypeLevelArm<E> {
     fn parse(input: ParseStream) -> Result<Self> {
-        let variant_ident: Ident = input.parse()?;
+        input.parse::<Option<Token![::]>>()?;
+        let variant_ident: Ident = loop {
+            let ident: Ident = input.parse()?;
+            if input.parse::<Option<Token![::]>>()?.is_none() {
+                break ident;
+            }
+        };
         let variant_generics: Generics = input.parse()?;
         let fat_arrow_token: Token![=>] = input.parse()?;
         let body = E::parse_match_arm_body(input)?;

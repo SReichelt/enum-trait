@@ -26,10 +26,8 @@ impl MetaItemList {
         // Output all trait definitions first, to avoid restrictions on the order of input items.
         for item in &self.0 {
             if let MetaItem::TraitDef(trait_item) = item {
-                let TraitContents::Enum { variants } = &trait_item.contents;
-                result.0.push(OutputMetaItem::TraitDef(OutputItemTraitDef {
-                    trait_item,
-                    variants: Some(
+                let variants = if let TraitContents::Enum { variants } = &trait_item.contents {
+                    Some(
                         variants
                             .iter()
                             .map(|variant| {
@@ -41,7 +39,13 @@ impl MetaItemList {
                                 })
                             })
                             .collect::<Result<_>>()?,
-                    ),
+                    )
+                } else {
+                    None
+                };
+                result.0.push(OutputMetaItem::TraitDef(OutputItemTraitDef {
+                    trait_item,
+                    variants,
                     impl_items: Vec::new(),
                     next_internal_item_idx: 0,
                 }));
@@ -224,6 +228,8 @@ impl Parse for MetaItem {
             lookahead = ahead.lookahead1();
             if lookahead.peek(Token![impl]) {
                 return Ok(MetaItem::TraitImpl(ItemTraitImpl::parse(input, attrs)?));
+            } else {
+                return Ok(MetaItem::TraitDef(ItemTraitDef::parse(input, attrs)?));
             }
         } else if lookahead.peek(Token![enum]) {
             return Ok(MetaItem::TraitDef(ItemTraitDef::parse(input, attrs)?));
@@ -254,20 +260,34 @@ pub struct ItemTraitDef {
 impl ItemTraitDef {
     fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
         let vis: Visibility = input.parse()?;
-        input.parse::<Token![enum]>()?;
+        let enum_token = input.parse::<Option<Token![enum]>>()?;
         let trait_token: Token![trait] = input.parse()?;
         let ident: Ident = input.parse()?;
-        let generics: MetaGenerics = input.parse()?;
-        let content: ParseBuffer;
-        braced!(content in input);
-        let variants = content.parse_terminated(TraitVariant::parse, Token![,])?;
+        let mut generics: MetaGenerics = input.parse()?;
+        let contents = if enum_token.is_some() {
+            if input.peek(Token![where]) {
+                generics.where_clause = Some(input.parse()?);
+            };
+            let content: ParseBuffer;
+            braced!(content in input);
+            let variants = content.parse_terminated(TraitVariant::parse, Token![,])?;
+            TraitContents::Enum { variants }
+        } else {
+            input.parse::<Token![=]>()?;
+            let path: Path = input.parse()?;
+            if input.peek(Token![where]) {
+                generics.where_clause = Some(input.parse()?);
+            };
+            input.parse::<Token![;]>()?;
+            TraitContents::Alias { path }
+        };
         Ok(ItemTraitDef {
             attrs,
             vis,
             trait_token,
             ident,
             generics,
-            contents: TraitContents::Enum { variants },
+            contents,
         })
     }
 }
@@ -275,6 +295,9 @@ impl ItemTraitDef {
 pub enum TraitContents {
     Enum {
         variants: Punctuated<TraitVariant, Token![,]>,
+    },
+    Alias {
+        path: Path,
     },
 }
 

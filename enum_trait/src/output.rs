@@ -605,12 +605,14 @@ impl<'a> OutputItemTraitDef<'a> {
         )
     }
 
+    fn impl_macro_ident(ident: &Ident) -> Ident {
+        ident_with_prefix(ident, "__trait_impl__")
+    }
+
     fn output_contents(&self, tokens: &mut TokenStream) {
-        match &self.trait_item.contents {
-            TraitContents::Enum { variants } => {
-                for variant in variants {
-                    self.output_variant_def(variant, tokens);
-                }
+        if let TraitContents::Enum { variants } = &self.trait_item.contents {
+            for variant in variants {
+                self.output_variant_def(variant, tokens);
             }
         }
     }
@@ -654,7 +656,7 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::clone::Clone),
+            quote!(::core::clone::Clone),
             quote! {
                 fn clone(&self) -> Self {
                     unreachable!()
@@ -667,7 +669,7 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::marker::Copy),
+            quote!(::core::marker::Copy),
             TokenStream::new(),
             tokens,
         );
@@ -676,7 +678,7 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::default::Default),
+            quote!(::core::default::Default),
             quote! {
                 fn default() -> Self {
                     panic!("marker type is not intended to be constructed")
@@ -689,7 +691,7 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::cmp::PartialEq),
+            quote!(::core::cmp::PartialEq),
             quote! {
                 fn eq(&self, _other: &Self) -> bool {
                     unreachable!()
@@ -702,7 +704,7 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::cmp::Eq),
+            quote!(::core::cmp::Eq),
             TokenStream::new(),
             tokens,
         );
@@ -711,9 +713,9 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::cmp::PartialOrd),
+            quote!(::core::cmp::PartialOrd),
             quote! {
-                fn partial_cmp(&self, _other: &Self) -> Option<core::cmp::Ordering> {
+                fn partial_cmp(&self, _other: &Self) -> Option<::core::cmp::Ordering> {
                     unreachable!()
                 }
             },
@@ -724,9 +726,9 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::cmp::Ord),
+            quote!(::core::cmp::Ord),
             quote! {
-                fn cmp(&self, _other: &Self) -> core::cmp::Ordering {
+                fn cmp(&self, _other: &Self) -> ::core::cmp::Ordering {
                     unreachable!()
                 }
             },
@@ -737,9 +739,9 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::hash::Hash),
+            quote!(::core::hash::Hash),
             quote! {
-                fn hash<H: core::hash::Hasher>(&self, _state: &mut H) {
+                fn hash<H: ::core::hash::Hasher>(&self, _state: &mut H) {
                     unreachable!()
                 }
             },
@@ -750,9 +752,9 @@ impl<'a> OutputItemTraitDef<'a> {
             variant_ident,
             variant_generics,
             &variant_args,
-            quote!(core::fmt::Debug),
+            quote!(::core::fmt::Debug),
             quote! {
-                fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                fn fmt(&self, _f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                     unreachable!()
                 }
             },
@@ -779,7 +781,11 @@ impl<'a> OutputItemTraitDef<'a> {
 
 impl ToTokens for OutputItemTraitDef<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let trait_generics = self.trait_item.generics.extract_generics();
+        let is_enum_trait = matches!(
+            &self.trait_item.contents,
+            TraitContents::Enum { variants: _ }
+        );
+        let mut trait_generics = self.trait_item.generics.extract_generics();
         let trait_generics_vec: Vec<TokenStream> = trait_generics
             .params
             .iter()
@@ -789,16 +795,16 @@ impl ToTokens for OutputItemTraitDef<'_> {
         match &self.trait_item.contents {
             TraitContents::Enum { variants } => {
                 supertraits = parse_quote!(
-                    core::marker::Sized
-                        + core::clone::Clone
-                        + core::marker::Copy
-                        + core::default::Default
-                        + core::cmp::PartialEq
-                        + core::cmp::Eq
-                        + core::cmp::PartialOrd
-                        + core::cmp::Ord
-                        + core::hash::Hash
-                        + core::fmt::Debug
+                    ::core::marker::Sized
+                        + ::core::clone::Clone
+                        + ::core::marker::Copy
+                        + ::core::default::Default
+                        + ::core::cmp::PartialEq
+                        + ::core::cmp::Eq
+                        + ::core::cmp::PartialOrd
+                        + ::core::cmp::Ord
+                        + ::core::hash::Hash
+                        + ::core::fmt::Debug
                 );
                 if variants.iter().all(|variant| {
                     variant.generics.params.iter().all(|param| {
@@ -817,6 +823,19 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 }) {
                     supertraits.push(TypeParamBound::Lifetime(parse_quote!('static)));
                 }
+            }
+            TraitContents::Alias { path } => {
+                supertraits = Punctuated::new();
+                supertraits.push(TypeParamBound::Trait(TraitBound {
+                    paren_token: None,
+                    modifier: TraitBoundModifier::None,
+                    lifetimes: None,
+                    path: path.clone(),
+                }));
+                // Omit `where` clauses of trait aliases, as we don't have a robust proof mechanism
+                // to convince Rust that they are satisfied. Instead, we trust the user to define
+                // the variant combinations equivalently to the `where` clause.
+                trait_generics.where_clause = None;
             }
         }
         let trait_item = ItemTrait {
@@ -837,14 +856,20 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         self.output_contents(tokens);
 
-        let mut macro_params = quote!($_Name:ident, $($_ref_path:ident::)*, );
-        let mut macro_body = TokenStream::new();
+        let mut macro_params_base = quote!($_Name:ident, $($_ref_path:ident::)*, );
+        let mut macro_default_args_base = quote!($_Name, $($_ref_path::)*, );
         for trait_param in &self.trait_item.generics.params {
             if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
                 let ident = &type_bound_param.ident;
-                macro_params.append_all(quote!(($($#ident:tt)+), ));
+                macro_params_base.append_all(quote!(($($#ident:tt)+), ));
+                macro_default_args_base.append_all(quote!(($($#ident)+), ));
             }
         }
+        let mut macro_variant_params = TokenStream::new();
+        let mut macro_variant_args = TokenStream::new();
+        let mut macro_variant_default_args = TokenStream::new();
+        let mut macro_body = TokenStream::new();
+        let define_impls = is_enum_trait || self.trait_item.generics.where_clause.is_some();
         if let Some(variants) = &self.variants {
             for output_variant in variants {
                 let variant = &output_variant.variant;
@@ -854,6 +879,8 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     .generics
                     .eliminate_in_generics(&mut variant_generics);
                 let mut macro_generic_params = Vec::new();
+                let mut macro_generic_args = Vec::new();
+                let mut macro_generic_default_args = Vec::new();
                 let mut impl_generic_params = trait_generics_vec.clone();
                 let mut impl_generic_args = Vec::new();
                 let param_prefix = format!("{ident}_");
@@ -867,6 +894,8 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         }) => {
                             let ident = ident_with_prefix(&lifetime.ident, &param_prefix);
                             macro_generic_params.push(quote!($#ident:lifetime));
+                            macro_generic_args.push(quote!($#ident));
+                            macro_generic_default_args.push(lifetime.to_token_stream());
                             impl_generic_params.push(quote!($#ident #colon_token #bounds));
                             impl_generic_args.push(quote!($#ident));
                         }
@@ -880,6 +909,8 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         }) => {
                             let ident = ident_with_prefix(ident, &param_prefix);
                             macro_generic_params.push(quote!($#ident:ident));
+                            macro_generic_args.push(quote!($#ident));
+                            macro_generic_default_args.push(ident.to_token_stream());
                             // TODO: substitute own trait with $_Name in bounds
                             impl_generic_params
                                 .push(quote!($#ident #colon_token #bounds #eq_token #default));
@@ -896,6 +927,8 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         }) => {
                             let ident = ident_with_prefix(ident, &param_prefix);
                             macro_generic_params.push(quote!($#ident:ident));
+                            macro_generic_args.push(quote!($#ident));
+                            macro_generic_default_args.push(ident.to_token_stream());
                             impl_generic_params.push(
                                 quote!(#const_token $#ident #colon_token #ty #eq_token #default),
                             );
@@ -904,14 +937,26 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     }
                 }
                 let mut macro_generics = TokenStream::new();
+                let mut macro_arg_generics = TokenStream::new();
+                let mut macro_default_arg_generics = TokenStream::new();
                 if !macro_generic_params.is_empty() {
                     macro_generics.append_all(variant.generics.lt_token);
                     macro_generics.append_separated(macro_generic_params, <Token![,]>::default());
                     macro_generics.append_all(quote!($(,)?));
                     macro_generics.append_all(variant.generics.gt_token);
+                    macro_arg_generics.append_all(variant.generics.lt_token);
+                    macro_arg_generics.append_separated(macro_generic_args, <Token![,]>::default());
+                    macro_arg_generics.append_all(variant.generics.gt_token);
+                    macro_default_arg_generics.append_all(variant.generics.lt_token);
+                    macro_default_arg_generics
+                        .append_separated(macro_generic_default_args, <Token![,]>::default());
+                    macro_default_arg_generics.append_all(variant.generics.gt_token);
                 }
                 let body_ident = ident_with_suffix(ident, "__Body");
-                macro_params.append_all(quote!(#ident #macro_generics => $#body_ident:tt));
+                macro_variant_params.append_all(quote!(#ident #macro_generics => $#body_ident:tt));
+                macro_variant_args.append_all(quote!(#ident #macro_arg_generics => $#body_ident));
+                macro_variant_default_args
+                    .append_all(quote!(#ident #macro_default_arg_generics => {}));
                 let mut impl_generics = TokenStream::new();
                 if !impl_generic_params.is_empty() {
                     impl_generics.append_all(
@@ -934,19 +979,48 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     impl_args.append_separated(impl_generic_args, <Token![,]>::default());
                     impl_args.append_all(variant.generics.gt_token);
                 }
-                macro_body.append_all(
-                    quote!(impl #impl_generics $_Name for $($_ref_path::)*#ident #impl_args $#body_ident),
-                );
+                if define_impls {
+                    macro_body.append_all(
+                        quote!(impl #impl_generics $_Name for $($_ref_path::)*#ident #impl_args $#body_ident),
+                    );
+                }
             }
         } else {
             // TODO
         }
         let ident = &self.trait_item.ident;
-        let macro_ident = ident_with_prefix(ident, "__trait_impl__");
-        // TODO: Add support for trait aliases where variants are not known.
-        tokens.append_all(quote!(macro_rules! #macro_ident {
-            (#macro_params) => { #macro_body }
-        }));
+        if !define_impls {
+            if let TraitContents::Alias { path } = &self.trait_item.contents {
+                let mut path = path.clone();
+                if let Some(segment) = path.segments.last_mut() {
+                    segment.ident = Self::impl_macro_ident(&segment.ident);
+                    segment.arguments = PathArguments::None;
+                }
+                let mut impl_args = quote!($_Name, );
+                path.leading_colon.to_tokens(&mut impl_args);
+                for segment_pair in path.segments.pairs() {
+                    if segment_pair.punct().is_some() {
+                        segment_pair.to_tokens(&mut impl_args);
+                    }
+                }
+                impl_args.append_all(quote!(, ));
+                macro_body.append_all(quote!(#path!(#impl_args #macro_variant_args);));
+            }
+        }
+        let macro_ident = Self::impl_macro_ident(ident);
+        let macro_default_matcher = if macro_variant_params.is_empty() {
+            TokenStream::new()
+        } else {
+            quote!((#macro_params_base) => { $($_ref_path::)*#macro_ident!(#macro_default_args_base #macro_variant_default_args); };)
+        };
+        tokens.append_all(quote! {
+            #[macro_export]
+            macro_rules! #macro_ident {
+                #macro_default_matcher
+                (#macro_params_base #macro_variant_params) => { #macro_body };
+            }
+            pub use #macro_ident;
+        });
 
         let mut impl_args = quote!(#ident, , );
         for trait_param in &self.trait_item.generics.params {
@@ -1007,7 +1081,7 @@ fn phantom_types(generics: &Generics) -> Punctuated<Field, Token![,]> {
         match param {
             GenericParam::Type(type_param) => {
                 let name = &type_param.ident;
-                types.push(parse_quote!(core::marker::PhantomData<#name>));
+                types.push(parse_quote!(::core::marker::PhantomData<#name>));
             }
             _ => {}
         }

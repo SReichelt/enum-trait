@@ -103,6 +103,7 @@ pub struct MetaGenerics {
     pub lt_token: Option<Token![<]>,
     pub params: Punctuated<MetaGenericParam, Token![,]>,
     pub gt_token: Option<Token![>]>,
+    pub where_clause: Option<WhereClause>,
 }
 
 impl Parse for MetaGenerics {
@@ -132,6 +133,7 @@ impl Parse for MetaGenerics {
             lt_token: Some(lt_token),
             params,
             gt_token: Some(gt_token),
+            where_clause: None,
         })
     }
 }
@@ -149,9 +151,7 @@ impl MetaGenerics {
         for param in &mut generics.params {
             self.eliminate_in_generic_param(param);
         }
-        if let Some(where_clause) = &mut generics.where_clause {
-            self.eliminate_in_where_clause(where_clause);
-        }
+        self.eliminate_in_where_clause(&mut generics.where_clause);
     }
 
     pub fn eliminate_in_generic_param(&self, param: &mut GenericParam) {
@@ -269,9 +269,11 @@ impl MetaGenerics {
         None
     }
 
-    pub fn eliminate_in_where_clause(&self, where_clause: &mut WhereClause) {
-        for predicate in &mut where_clause.predicates {
-            self.eliminate_in_where_predicate(predicate);
+    pub fn eliminate_in_where_clause(&self, where_clause: &mut Option<WhereClause>) {
+        if let Some(where_clause) = where_clause {
+            for predicate in &mut where_clause.predicates {
+                self.eliminate_in_where_predicate(predicate);
+            }
         }
     }
 
@@ -299,11 +301,13 @@ impl MetaGenerics {
         } else {
             (self.lt_token.clone(), self.gt_token.clone())
         };
+        let mut where_clause = self.where_clause.clone();
+        self.eliminate_in_where_clause(&mut where_clause);
         Generics {
             lt_token,
             params,
             gt_token,
-            where_clause: None,
+            where_clause,
         }
     }
 }
