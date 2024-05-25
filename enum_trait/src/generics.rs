@@ -1,6 +1,6 @@
 use std::{borrow::Cow, mem::take};
 
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
 use syn::{
     parse::{Parse, ParseStream},
@@ -139,7 +139,7 @@ impl Parse for MetaGenerics {
 }
 
 impl ToTokens for MetaGenerics {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         self.lt_token.to_tokens(tokens);
         self.params.to_tokens(tokens);
         self.gt_token.to_tokens(tokens);
@@ -329,7 +329,7 @@ impl Parse for MetaGenericParam {
 }
 
 impl ToTokens for MetaGenericParam {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             MetaGenericParam::Generic(generic_param) => generic_param.to_tokens(tokens),
             MetaGenericParam::TypeBound(type_bound_param) => type_bound_param.to_tokens(tokens),
@@ -365,7 +365,7 @@ impl Parse for TypeBoundParam {
 }
 
 impl ToTokens for TypeBoundParam {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         self.trait_token.to_tokens(tokens);
         self.ident.to_tokens(tokens);
         self.colon_token.to_tokens(tokens);
@@ -374,11 +374,9 @@ impl ToTokens for TypeBoundParam {
 }
 
 pub struct MetaWhereClause {
-    #[allow(unused)]
     pub where_token: Token![where],
-    #[allow(unused)]
     pub left_ty: Type,
-    #[allow(unused)]
+    pub eq_token: Token![=],
     pub right_ty: Type,
 }
 
@@ -386,13 +384,23 @@ impl Parse for MetaWhereClause {
     fn parse(input: ParseStream) -> Result<Self> {
         let where_token: Token![where] = input.parse()?;
         let left_ty: Type = input.parse()?;
-        input.parse::<Token![=]>()?;
+        let eq_token: Token![=] = input.parse()?;
         let right_ty: Type = input.parse()?;
         Ok(MetaWhereClause {
             where_token,
             left_ty,
+            eq_token,
             right_ty,
         })
+    }
+}
+
+impl ToTokens for MetaWhereClause {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.where_token.to_tokens(tokens);
+        self.left_ty.to_tokens(tokens);
+        self.eq_token.to_tokens(tokens);
+        self.right_ty.to_tokens(tokens);
     }
 }
 

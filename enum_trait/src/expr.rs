@@ -176,7 +176,7 @@ impl<E: ToTokens> ToTokens for TypeLevelExprMatch<E> {
 
 #[derive(Clone)]
 pub struct TypeLevelArm<E> {
-    pub variants: Punctuated<TypeLevelArmVariant, token::Comma>,
+    pub selectors: Punctuated<TypeLevelArmSelector, token::Comma>,
     pub fat_arrow_token: token::FatArrow,
     pub body: E,
     pub comma_token: Option<token::Comma>,
@@ -184,7 +184,7 @@ pub struct TypeLevelArm<E> {
 
 impl<E: ParseExt> Parse for TypeLevelArm<E> {
     fn parse(input: ParseStream) -> Result<Self> {
-        let variants: Punctuated<TypeLevelArmVariant, Token![,]> =
+        let selectors: Punctuated<TypeLevelArmSelector, Token![,]> =
             Punctuated::parse_separated_nonempty(input)?;
         input.parse::<Option<Token![,]>>()?;
         let fat_arrow_token: Token![=>] = input.parse()?;
@@ -197,7 +197,7 @@ impl<E: ParseExt> Parse for TypeLevelArm<E> {
             input.parse::<Option<Token![,]>>()?
         };
         Ok(TypeLevelArm {
-            variants,
+            selectors,
             fat_arrow_token,
             body,
             comma_token,
@@ -207,7 +207,7 @@ impl<E: ParseExt> Parse for TypeLevelArm<E> {
 
 impl<E: ToTokens> ToTokens for TypeLevelArm<E> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.variants.to_tokens(tokens);
+        self.selectors.to_tokens(tokens);
         self.fat_arrow_token.to_tokens(tokens);
         self.body.to_tokens(tokens);
         self.comma_token.to_tokens(tokens);
@@ -215,32 +215,41 @@ impl<E: ToTokens> ToTokens for TypeLevelArm<E> {
 }
 
 #[derive(Clone)]
-pub struct TypeLevelArmVariant {
-    pub ident: Option<Ident>,
-    pub generics: Generics,
+pub enum TypeLevelArmSelector {
+    Specific { ident: Ident, generics: Generics },
+    Default { underscore_token: token::Underscore },
 }
 
-impl Parse for TypeLevelArmVariant {
+impl Parse for TypeLevelArmSelector {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mut ident: Option<Ident> = None;
-        if input.parse::<Option<Token![_]>>()?.is_none() {
+        if let Some(underscore_token) = input.parse::<Option<Token![_]>>()? {
+            Ok(TypeLevelArmSelector::Default { underscore_token })
+        } else {
+            let mut ident: Ident;
             input.parse::<Option<Token![::]>>()?;
             loop {
-                ident = Some(input.parse()?);
+                ident = input.parse()?;
                 if input.parse::<Option<Token![::]>>()?.is_none() {
                     break;
                 }
             }
+            let generics: Generics = input.parse()?;
+            Ok(TypeLevelArmSelector::Specific { ident, generics })
         }
-        let generics: Generics = input.parse()?;
-        Ok(TypeLevelArmVariant { ident, generics })
     }
 }
 
-impl ToTokens for TypeLevelArmVariant {
+impl ToTokens for TypeLevelArmSelector {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.ident.to_tokens(tokens);
-        self.generics.to_tokens(tokens);
+        match self {
+            TypeLevelArmSelector::Specific { ident, generics } => {
+                ident.to_tokens(tokens);
+                generics.to_tokens(tokens);
+            }
+            TypeLevelArmSelector::Default { underscore_token } => {
+                underscore_token.to_tokens(tokens);
+            }
+        }
     }
 }
 

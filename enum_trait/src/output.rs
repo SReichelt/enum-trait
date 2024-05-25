@@ -16,7 +16,7 @@ impl<'a> OutputMetaItemList<'a> {
     pub fn trait_def_item(&mut self, ident: &Ident) -> Result<&mut OutputItemTraitDef<'a>> {
         let Some(trait_def_item) = self.0.iter_mut().find_map(|output_item| {
             if let OutputMetaItem::TraitDef(trait_def_item) = output_item {
-                if &trait_def_item.trait_item.ident == ident {
+                if &trait_def_item.trait_def.ident == ident {
                     return Some(trait_def_item);
                 }
             }
@@ -24,7 +24,9 @@ impl<'a> OutputMetaItemList<'a> {
         }) else {
             return Err(Error::new_spanned(
                 &ident,
-                format!("trait `{ident}` not defined in this meta block"),
+                format!(
+                    "trait `{ident}` not defined in this meta block (may need to define an alias)"
+                ),
             ));
         };
         Ok(trait_def_item)
@@ -34,10 +36,11 @@ impl<'a> OutputMetaItemList<'a> {
         &mut self,
         item: TraitImplItem,
         context: &GenericsContext,
+        trait_def: &ItemTraitDef,
         variants_known: bool,
     ) -> Result<(
         TraitItem,
-        Option<(Vec<(Option<TraitVariant>, ImplItem)>, Span)>,
+        Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>,
     )> {
         match item {
             TraitImplItem::Type(type_item) => {
@@ -52,63 +55,31 @@ impl<'a> OutputMetaItemList<'a> {
                     semi_token: Default::default(),
                 };
                 let item_context = GenericsContext::WithGenerics(&type_item.generics, &context);
-                let mut variants = None;
                 let mut expr = Some(type_item.ty);
-                if let Some(match_expr) = Self::get_self_match(&mut expr) {
-                    let variants_span = match_expr.span();
-                    let variants_impls = match_expr
-                        .arms
-                        .into_iter()
-                        .map(|mut arm| {
-                            if arm.variants.len() != 1 {
-                                return Err(Error::new(
-                                    arm.variants.span(),
-                                    "exactly one variant expected",
-                                ));
-                            }
-                            let mut variant = arm.variants.into_iter().next().unwrap();
-                            let variant_span = variant.span();
-                            let Some(variant_ident) = variant.ident else {
-                                return Err(Error::new(
-                                    variant_span,
-                                    "default case not supported yet",
-                                ));
-                            };
-                            rename_conflicting_params(
-                                &mut variant.generics,
-                                |param| Ok(param_context_name_conflict(param, &item_context)),
-                                |subst| arm.body.substitute_impl(subst),
-                            )?;
-                            let body_context =
-                                GenericsContext::WithGenerics(&variant.generics, &item_context);
-                            let ty = self.convert_type_level_expr_type(
-                                arm.body,
-                                &body_context,
-                                &type_item.bounds,
-                            )?;
-                            let impl_item = ImplItemType {
-                                attrs: Self::code_item_attrs(type_item.attrs.clone()),
-                                vis: Visibility::Inherited,
-                                defaultness: None,
-                                type_token: type_item.type_token.clone(),
-                                ident: type_item.ident.clone(),
-                                generics: type_item.generics.clone(),
-                                eq_token: Default::default(),
-                                ty,
-                                semi_token: Default::default(),
-                            };
-                            Ok((
-                                Some(TraitVariant {
-                                    attrs: Vec::new(),
-                                    ident: variant_ident,
-                                    generics: variant.generics,
-                                }),
-                                ImplItem::Type(impl_item),
-                            ))
-                        })
-                        .collect::<Result<_>>()?;
-                    variants = Some((variants_impls, variants_span));
-                } else {
+                let mut variants = Self::try_implement_variants(
+                    &mut expr,
+                    &item_context,
+                    trait_def,
+                    |body, body_context| {
+                        let ty = self.convert_type_level_expr_type(
+                            body,
+                            &body_context,
+                            &type_item.bounds,
+                        )?;
+                        Ok(ImplItem::Type(ImplItemType {
+                            attrs: Self::code_item_attrs(type_item.attrs.clone()),
+                            vis: Visibility::Inherited,
+                            defaultness: None,
+                            type_token: type_item.type_token.clone(),
+                            ident: type_item.ident.clone(),
+                            generics: type_item.generics.clone(),
+                            eq_token: Default::default(),
+                            ty,
+                            semi_token: Default::default(),
+                        }))
+                    },
+                )?;
+                if variants.is_none() {
                     let ty = self.convert_type_level_expr_type(
                         expr.unwrap(),
                         &item_context,
@@ -147,65 +118,33 @@ impl<'a> OutputMetaItemList<'a> {
                     default: None,
                     semi_token: Default::default(),
                 };
-                let mut variants = None;
                 let mut expr = Some(const_item.expr);
-                if let Some(match_expr) = Self::get_self_match(&mut expr) {
-                    let variants_span = match_expr.span();
-                    let variants_impls = match_expr
-                        .arms
-                        .into_iter()
-                        .map(|mut arm| {
-                            if arm.variants.len() != 1 {
-                                return Err(Error::new(
-                                    arm.variants.span(),
-                                    "exactly one variant expected",
-                                ));
-                            }
-                            let mut variant = arm.variants.into_iter().next().unwrap();
-                            let variant_span = variant.span();
-                            let Some(variant_ident) = variant.ident else {
-                                return Err(Error::new(
-                                    variant_span,
-                                    "default case not supported yet",
-                                ));
-                            };
-                            rename_conflicting_params(
-                                &mut variant.generics,
-                                |param| Ok(param_context_name_conflict(param, &context)),
-                                |subst| arm.body.substitute_impl(subst),
-                            )?;
-                            let body_context =
-                                GenericsContext::WithGenerics(&variant.generics, &context);
-                            let expr = self.convert_type_level_expr_const(
-                                arm.body,
-                                &body_context,
-                                &const_item.ty,
-                            )?;
-                            let impl_item = ImplItemConst {
-                                attrs: Self::code_item_attrs(const_item.attrs.clone()),
-                                vis: Visibility::Inherited,
-                                defaultness: None,
-                                const_token: const_item.const_token.clone(),
-                                ident: const_item.ident.clone(),
-                                generics: Default::default(),
-                                colon_token: Default::default(),
-                                ty: const_item.ty.clone(),
-                                eq_token: Default::default(),
-                                expr,
-                                semi_token: Default::default(),
-                            };
-                            Ok((
-                                Some(TraitVariant {
-                                    attrs: Vec::new(),
-                                    ident: variant_ident,
-                                    generics: variant.generics,
-                                }),
-                                ImplItem::Const(impl_item),
-                            ))
-                        })
-                        .collect::<Result<_>>()?;
-                    variants = Some((variants_impls, variants_span));
-                } else {
+                let variants = Self::try_implement_variants(
+                    &mut expr,
+                    context,
+                    trait_def,
+                    |body, body_context| {
+                        let expr = self.convert_type_level_expr_const(
+                            body,
+                            &body_context,
+                            &const_item.ty,
+                        )?;
+                        Ok(ImplItem::Const(ImplItemConst {
+                            attrs: Self::code_item_attrs(const_item.attrs.clone()),
+                            vis: Visibility::Inherited,
+                            defaultness: None,
+                            const_token: const_item.const_token.clone(),
+                            ident: const_item.ident.clone(),
+                            generics: Default::default(),
+                            colon_token: Default::default(),
+                            ty: const_item.ty.clone(),
+                            eq_token: Default::default(),
+                            expr,
+                            semi_token: Default::default(),
+                        }))
+                    },
+                )?;
+                if variants.is_none() {
                     let expr =
                         self.convert_type_level_expr_const(expr.unwrap(), context, &const_item.ty)?;
                     trait_item.default = Some((Default::default(), expr));
@@ -221,62 +160,27 @@ impl<'a> OutputMetaItemList<'a> {
                     semi_token: Default::default(),
                 };
                 let item_context = GenericsContext::WithGenerics(&fn_item.sig.generics, &context);
-                let mut variants = None;
                 let mut expr = Some(fn_item.expr);
-                if let Some(match_expr) = Self::get_self_match(&mut expr) {
-                    let variants_span = match_expr.span();
-                    let variants_impls = match_expr
-                        .arms
-                        .into_iter()
-                        .map(|mut arm| {
-                            if arm.variants.len() != 1 {
-                                return Err(Error::new(
-                                    arm.variants.span(),
-                                    "exactly one variant expected",
-                                ));
-                            }
-                            let mut variant = arm.variants.into_iter().next().unwrap();
-                            let variant_span = variant.span();
-                            let Some(variant_ident) = variant.ident else {
-                                return Err(Error::new(
-                                    variant_span,
-                                    "default case not supported yet",
-                                ));
-                            };
-                            rename_conflicting_params(
-                                &mut variant.generics,
-                                |param| Ok(param_context_name_conflict(param, &item_context)),
-                                |subst| arm.body.substitute_impl(subst),
-                            )?;
-                            let body_context =
-                                GenericsContext::WithGenerics(&variant.generics, &item_context);
-                            let expr = self.convert_type_level_expr_fn(
-                                arm.body,
-                                &body_context,
-                                &fn_item.sig,
-                            )?;
-                            let impl_item = ImplItemFn {
-                                attrs: Self::code_item_attrs(fn_item.attrs.clone()),
-                                vis: Visibility::Inherited,
-                                defaultness: None,
-                                sig: fn_item.sig.clone(),
-                                block: Block {
-                                    brace_token: Default::default(),
-                                    stmts: vec![Stmt::Expr(expr, None)],
-                                },
-                            };
-                            Ok((
-                                Some(TraitVariant {
-                                    attrs: Vec::new(),
-                                    ident: variant_ident,
-                                    generics: variant.generics,
-                                }),
-                                ImplItem::Fn(impl_item),
-                            ))
-                        })
-                        .collect::<Result<_>>()?;
-                    variants = Some((variants_impls, variants_span));
-                } else {
+                let variants = Self::try_implement_variants(
+                    &mut expr,
+                    &item_context,
+                    trait_def,
+                    |body, body_context| {
+                        let expr =
+                            self.convert_type_level_expr_fn(body, &body_context, &fn_item.sig)?;
+                        Ok(ImplItem::Fn(ImplItemFn {
+                            attrs: Self::code_item_attrs(fn_item.attrs.clone()),
+                            vis: Visibility::Inherited,
+                            defaultness: None,
+                            sig: fn_item.sig.clone(),
+                            block: Block {
+                                brace_token: Default::default(),
+                                stmts: vec![Stmt::Expr(expr, None)],
+                            },
+                        }))
+                    },
+                )?;
+                if variants.is_none() {
                     let expr =
                         self.convert_type_level_expr_fn(expr.unwrap(), context, &fn_item.sig)?;
                     trait_item.default = Some(Block {
@@ -296,10 +200,7 @@ impl<'a> OutputMetaItemList<'a> {
         let Some(TypeLevelExpr::Match(match_expr)) = expr else {
             return None;
         };
-        if match_expr.types.len() != 1 {
-            return None;
-        }
-        let Type::Path(TypePath { qself: None, path }) = match_expr.types.first().unwrap() else {
+        let Type::Path(TypePath { qself: None, path }) = match_expr.types.last().unwrap() else {
             return None;
         };
         if !path.is_ident(SELF_TYPE_NAME) {
@@ -309,6 +210,136 @@ impl<'a> OutputMetaItemList<'a> {
             unreachable!();
         };
         Some(match_expr)
+    }
+
+    fn try_implement_variants<E: Substitutable + ToTokens>(
+        expr: &mut Option<TypeLevelExpr<E>>,
+        context: &GenericsContext,
+        trait_def: &ItemTraitDef,
+        f: impl FnMut(TypeLevelExpr<E>, &GenericsContext) -> Result<ImplItem>,
+    ) -> Result<Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>> {
+        if let Some(match_expr) = Self::get_self_match(expr) {
+            let variants_span = match_expr.span();
+            let variants_impls = Self::implement_variants(match_expr, context, trait_def, f)?;
+            Ok(Some((variants_impls, variants_span)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn implement_variants<E: Substitutable>(
+        match_expr: TypeLevelExprMatch<E>,
+        context: &GenericsContext,
+        trait_def: &ItemTraitDef,
+        mut f: impl FnMut(E, &GenericsContext) -> Result<ImplItem>,
+    ) -> Result<Vec<(Option<ImplVariant>, ImplItem)>> {
+        let mut free_params: Vec<GenericParam> = trait_def
+            .generics
+            .extract_generics()
+            .params
+            .into_iter()
+            .collect();
+        let mut matched_params = Vec::new();
+        let types_len = match_expr.types.len();
+        let mut ty_iter = match_expr.types.iter();
+        let mut ty = ty_iter.next().unwrap();
+        while let Some(next_ty) = ty_iter.next() {
+            let Some(match_ident) = Self::get_type_ident(&ty) else {
+                return Err(Error::new(
+                    ty.span(),
+                    "type matching is currently only supported on variables",
+                ));
+            };
+            let Some(generic_idx) = free_params.iter().position(|param| {
+                if let GenericParam::Type(type_param) = param {
+                    &type_param.ident == match_ident
+                } else {
+                    false
+                }
+            }) else {
+                return Err(Error::new(
+                    ty.span(),
+                    "combined matching is currently only supported for trait arguments",
+                ));
+            };
+            matched_params.push(free_params.remove(generic_idx));
+            ty = next_ty;
+        }
+        match_expr
+            .arms
+            .into_iter()
+            .map(|mut arm| {
+                if arm.selectors.len() != types_len {
+                    return Err(Error::new(
+                        arm.selectors.span(),
+                        format!("exactly {types_len} selector(s) expected"),
+                    ));
+                }
+                let mut impl_generic_params = Punctuated::new();
+                let mut trait_args = Punctuated::new();
+                for param in &free_params {
+                    impl_generic_params.push(param.clone());
+                    trait_args.push(generic_param_arg(param, None));
+                }
+                let mut selector_iter = arm.selectors.into_iter();
+                let mut selector = selector_iter.next().unwrap();
+                let mut matched_param_iter = matched_params.iter();
+                while let Some(next_selector) = selector_iter.next() {
+                    let matched_param = matched_param_iter.next().unwrap();
+                    match selector {
+                        TypeLevelArmSelector::Specific { ident, generics } => {
+                            for param in &generics.params {
+                                impl_generic_params.push(param.clone());
+                                let segment = PathSegment {
+                                    ident: ident.clone(),
+                                    arguments: generic_args(&generics),
+                                };
+                                trait_args.push(GenericArgument::Type(Type::Path(TypePath {
+                                    qself: None,
+                                    path: segment.into(),
+                                })));
+                            }
+                        }
+                        TypeLevelArmSelector::Default { .. } => {
+                            impl_generic_params.push(matched_param.clone());
+                            trait_args.push(generic_param_arg(matched_param, None));
+                        }
+                    }
+                    selector = next_selector;
+                }
+                match selector {
+                    TypeLevelArmSelector::Specific {
+                        ident,
+                        mut generics,
+                    } => {
+                        rename_conflicting_params(
+                            &mut generics,
+                            |param| Ok(param_context_name_conflict(param, &context)),
+                            |subst| arm.body.substitute_impl(subst),
+                        )?;
+                        let body_context = GenericsContext::WithGenerics(&generics, &context);
+                        let impl_item = f(arm.body, &body_context)?;
+                        Ok((
+                            Some(ImplVariant {
+                                // TODO
+                                impl_generics: build_generics(impl_generic_params),
+                                trait_args: build_path_arguments(trait_args),
+                                variant: TraitVariant {
+                                    attrs: Vec::new(),
+                                    ident,
+                                    generics,
+                                },
+                            }),
+                            impl_item,
+                        ))
+                    }
+                    TypeLevelArmSelector::Default { underscore_token } => Err(Error::new(
+                        underscore_token.span(),
+                        "default selector only supported for trait arguments",
+                    )),
+                }
+            })
+            .collect::<Result<_>>()
     }
 
     pub fn convert_type_level_expr_type(
@@ -470,13 +501,7 @@ impl<'a> OutputMetaItemList<'a> {
             X,
         ) -> Result<TraitImplItem>,
     ) -> Result<(Option<QSelf>, Path)> {
-        if match_expr.types.len() != 1 {
-            return Err(Error::new(
-                match_expr.types.span(),
-                "exactly one type expected",
-            ));
-        }
-        let ty = match_expr.types.first().unwrap().clone();
+        let ty = match_expr.types.last().unwrap().clone();
         let Some(match_ident) = Self::get_type_ident(&ty) else {
             return Err(Error::new(
                 ty.span(),
@@ -492,17 +517,47 @@ impl<'a> OutputMetaItemList<'a> {
                 "no appropriate type bound for matching found",
             ));
         };
-        let Some(trait_ident) = trait_bound.path.get_ident() else {
+        if trait_bound.path.leading_colon.is_some() || trait_bound.path.segments.len() != 1 {
             return Err(Error::new(
                 ty.span(),
-                "matching is currently only supported for plain traits",
+                "matching is not supported on externally-defined traits; define an alias within this block",
             ));
         };
+        let trait_segment = trait_bound.path.segments.last().unwrap();
+        let trait_ident = &trait_segment.ident;
         let trait_def_item = self.trait_def_item(trait_ident)?;
+        if let PathArguments::AngleBracketed(args) = &trait_segment.arguments {
+            for (param, arg) in trait_def_item
+                .trait_def
+                .generics
+                .params
+                .iter()
+                .zip(args.args.iter())
+            {
+                if let MetaGenericParam::Generic(param) = param {
+                    if let GenericArgument::Type(Type::Path(TypePath { qself: None, path })) = arg {
+                        if let Some(arg_ident) = path.get_ident() {
+                            expr.substitute(
+                                &GenericParam::Type(TypeParam {
+                                    attrs: Vec::new(),
+                                    ident: arg_ident.clone(),
+                                    colon_token: None,
+                                    bounds: Default::default(),
+                                    eq_token: None,
+                                    default: None,
+                                }),
+                                ParamSubstArg::Param(param),
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
         let impl_context = trait_def_item.impl_context();
+        let trait_def = trait_def_item.trait_def;
         let trait_item_ident = Ident::new(
             &format!("__{}", trait_def_item.next_internal_item_idx),
-            match_ident.span(),
+            Span::call_site(),
         );
         trait_def_item.next_internal_item_idx += 1;
         let variants_known = trait_def_item.variants.is_some();
@@ -514,6 +569,7 @@ impl<'a> OutputMetaItemList<'a> {
                 expr.1,
             )?,
             &impl_context,
+            trait_def,
             variants_known,
         )?;
         let trait_def_item = self.trait_def_item(trait_ident)?;
@@ -581,8 +637,8 @@ pub enum OutputMetaItem<'a> {
 }
 
 pub struct OutputItemTraitDef<'a> {
-    pub trait_item: &'a ItemTraitDef,
-    pub variants: Option<Vec<OutputTraitVariant>>,
+    pub trait_def: &'a ItemTraitDef,
+    pub variants: Option<Vec<OutputImplVariant>>,
     pub impl_items: Vec<TraitItem>,
     pub next_internal_item_idx: usize,
 }
@@ -591,52 +647,78 @@ impl<'a> OutputItemTraitDef<'a> {
     pub fn add_item(
         &mut self,
         item: TraitItem,
-        variants: Option<(Vec<(Option<TraitVariant>, ImplItem)>, Span)>,
+        variants: Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>,
     ) -> Result<()> {
         self.impl_items.push(item);
         if let Some((variants, variants_span)) = variants {
-            if let Some(existing_variants) = &mut self.variants {
-                let mut variant_iter = variants.into_iter();
-                for existing_variant in existing_variants {
-                    let Some((variant, mut impl_item)) = variant_iter.next() else {
-                        return Err(Error::new(
-                            variants_span,
-                            format!(
-                                "too few variants; expected {}",
-                                &existing_variant.variant.ident
-                            ),
-                        ));
-                    };
-                    if let Some(variant) = variant {
-                        if existing_variant.variant.ident != variant.ident {
-                            return Err(Error::new(
-                                variant.ident.span(),
-                                format!("expected variant {}", &existing_variant.variant.ident),
-                            ));
-                        }
-                        let mut expected_generics = existing_variant.variant.generics.clone();
-                        rename_all_params(&mut expected_generics, &variant.generics)?;
-                        check_token_equality(&variant.generics, &expected_generics)?;
-                        impl_item.substitute_all_params(
-                            &variant.generics,
-                            &existing_variant.variant.generics,
-                        )?;
-                    } else {
-                        assert!(variant_iter.next().is_none());
-                        variant_iter = vec![(None, impl_item.clone())].into_iter();
-                    }
-                    existing_variant.impl_items.push(impl_item);
-                }
-            } else {
+            if self.variants.is_none() {
                 self.variants = Some(
                     variants
-                        .into_iter()
-                        .map(|(variant, impl_item)| OutputTraitVariant {
-                            variant: variant.unwrap(),
-                            impl_items: vec![impl_item],
+                        .iter()
+                        .map(|(variant, _)| {
+                            // `unwrap` because `create_trait_item` only outputs `None` if
+                            // `variants_known` is `true`.
+                            let mut variant = variant.clone().unwrap();
+                            add_underscores_to_all_params(&mut variant.variant.generics)?;
+                            Ok(OutputImplVariant {
+                                variant,
+                                impl_items: Vec::new(),
+                            })
                         })
-                        .collect(),
+                        .collect::<Result<_>>()?,
                 );
+            }
+            let existing_variants = self.variants.as_mut().unwrap();
+            let mut variant_iter = variants.into_iter();
+            for existing_variant in existing_variants {
+                let existing_trait_variant = &existing_variant.variant.variant;
+                let Some((variant, mut impl_item)) = variant_iter.next() else {
+                    return Err(Error::new(
+                        variants_span,
+                        format!(
+                            "too few variants; expected `{}`",
+                            &existing_trait_variant.ident
+                        ),
+                    ));
+                };
+                if let Some(variant) = variant {
+                    let trait_variant = &variant.variant;
+                    if existing_trait_variant.ident != trait_variant.ident {
+                        return Err(Error::new(
+                            trait_variant.ident.span(),
+                            format!("expected variant `{}`", &existing_trait_variant.ident),
+                        ));
+                    }
+                    let mut expected_impl_generics = existing_variant.variant.impl_generics.clone();
+                    rename_all_params(&mut expected_impl_generics, &variant.impl_generics)?;
+                    check_token_equality(&variant.impl_generics, &expected_impl_generics)?;
+                    let mut variant_generics = trait_variant.generics.clone();
+                    variant_generics.substitute_all_params(
+                        &variant.impl_generics,
+                        &existing_variant.variant.impl_generics,
+                    )?;
+                    impl_item.substitute_all_params(
+                        &variant.impl_generics,
+                        &existing_variant.variant.impl_generics,
+                    )?;
+                    let mut expected_generics = existing_trait_variant.generics.clone();
+                    rename_all_params(&mut expected_generics, &variant_generics)?;
+                    check_token_equality(&variant_generics, &expected_generics)?;
+                    impl_item.substitute_all_params(
+                        &variant_generics,
+                        &existing_trait_variant.generics,
+                    )?;
+                } else {
+                    assert!(variant_iter.next().is_none());
+                    variant_iter = vec![(None, impl_item.clone())].into_iter();
+                }
+                existing_variant.impl_items.push(impl_item);
+            }
+            if let Some((Some(variant), _)) = variant_iter.next() {
+                return Err(Error::new(
+                    variant.variant.ident.span(),
+                    "superfluous variant",
+                ));
             }
         }
         Ok(())
@@ -648,7 +730,7 @@ impl<'a> OutputItemTraitDef<'a> {
             paren_token: None,
             modifier: TraitBoundModifier::None,
             lifetimes: None,
-            path: self.trait_item.ident.clone().into(),
+            path: self.trait_def.ident.clone().into(),
         }));
         GenericsContext::WithSelf(
             Cow::Owned(self_type_param(Span::call_site(), bounds)),
@@ -661,7 +743,7 @@ impl<'a> OutputItemTraitDef<'a> {
     }
 
     fn output_contents(&self, tokens: &mut TokenStream) {
-        if let TraitContents::Enum { variants } = &self.trait_item.contents {
+        if let TraitContents::Enum { variants } = &self.trait_def.contents {
             for variant in variants {
                 self.output_variant_def(variant, tokens);
             }
@@ -670,14 +752,14 @@ impl<'a> OutputItemTraitDef<'a> {
 
     fn output_variant_def(&self, variant: &TraitVariant, tokens: &mut TokenStream) {
         let mut variant_generics = variant.generics.clone();
-        self.trait_item
+        self.trait_def
             .generics
             .eliminate_in_generics(&mut variant_generics);
 
         let phantom_types = phantom_types(&variant_generics);
         let struct_item = ItemStruct {
             attrs: variant.attrs.clone(),
-            vis: self.trait_item.vis.clone(),
+            vis: self.trait_def.vis.clone(),
             struct_token: Default::default(),
             ident: variant.ident.clone(),
             generics: variant_generics.clone(),
@@ -832,18 +914,10 @@ impl<'a> OutputItemTraitDef<'a> {
 
 impl ToTokens for OutputItemTraitDef<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let is_enum_trait = matches!(
-            &self.trait_item.contents,
-            TraitContents::Enum { variants: _ }
-        );
-        let trait_generics = self.trait_item.generics.extract_generics();
-        let trait_generics_vec: Vec<TokenStream> = trait_generics
-            .params
-            .iter()
-            .map(ToTokens::to_token_stream)
-            .collect();
+        let is_enum_trait = matches!(&self.trait_def.contents, TraitContents::Enum { .. });
+        let trait_generics = self.trait_def.generics.extract_generics();
         let mut supertraits: Punctuated<TypeParamBound, Token![+]>;
-        match &self.trait_item.contents {
+        match &self.trait_def.contents {
             TraitContents::Enum { variants } => {
                 supertraits = parse_quote!(
                     ::core::marker::Sized
@@ -862,7 +936,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         if let GenericParam::Type(type_param) = param {
                             type_param.bounds.iter().any(|bound| {
                                 if let TypeParamBound::Trait(trait_bound) = bound {
-                                    trait_bound.path.is_ident(&self.trait_item.ident)
+                                    trait_bound.path.is_ident(&self.trait_def.ident)
                                 } else {
                                     false
                                 }
@@ -886,13 +960,13 @@ impl ToTokens for OutputItemTraitDef<'_> {
             }
         }
         let trait_item = ItemTrait {
-            attrs: self.trait_item.attrs.clone(),
-            vis: self.trait_item.vis.clone(),
+            attrs: self.trait_def.attrs.clone(),
+            vis: self.trait_def.vis.clone(),
             unsafety: None,
             auto_token: None,
             restriction: None,
-            trait_token: self.trait_item.trait_token.clone(),
-            ident: self.trait_item.ident.clone(),
+            trait_token: self.trait_def.trait_token.clone(),
+            ident: self.trait_def.ident.clone(),
             generics: trait_generics.clone(),
             colon_token: None,
             supertraits,
@@ -905,7 +979,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         let mut macro_params_base = quote!($_Name:ident, $($_ref_path:ident::)*, );
         let mut macro_default_args_base = quote!($_Name, $($_ref_path::)*, );
-        for trait_param in &self.trait_item.generics.params {
+        for trait_param in &self.trait_def.generics.params {
             if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
                 let ident = &type_bound_param.ident;
                 macro_params_base.append_all(quote!(($($#ident:tt)+), ));
@@ -916,19 +990,25 @@ impl ToTokens for OutputItemTraitDef<'_> {
         let mut macro_variant_args = TokenStream::new();
         let mut macro_variant_default_args = TokenStream::new();
         let mut macro_body = TokenStream::new();
-        let define_impls = is_enum_trait || self.trait_item.generics.where_clause.is_some();
+        let define_impls = is_enum_trait || self.trait_def.generics.where_clause.is_some();
         if let Some(variants) = &self.variants {
             for output_variant in variants {
-                let variant = &output_variant.variant;
+                let variant = &output_variant.variant.variant;
                 let ident = &variant.ident;
                 let mut variant_generics = variant.generics.clone();
-                self.trait_item
+                self.trait_def
                     .generics
                     .eliminate_in_generics(&mut variant_generics);
                 let mut macro_generic_params = Vec::new();
                 let mut macro_generic_args = Vec::new();
                 let mut macro_generic_default_args = Vec::new();
-                let mut impl_generic_params = trait_generics_vec.clone();
+                let mut impl_generic_params: Vec<TokenStream> = output_variant
+                    .variant
+                    .impl_generics
+                    .params
+                    .iter()
+                    .map(ToTokens::to_token_stream)
+                    .collect();
                 let mut impl_generic_args = Vec::new();
                 let param_prefix = format!("{ident}_");
                 for param in &variant_generics.params {
@@ -1010,16 +1090,17 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         variant
                             .generics
                             .lt_token
-                            .or(self.trait_item.generics.lt_token),
+                            .or(self.trait_def.generics.lt_token),
                     );
                     impl_generics.append_separated(impl_generic_params, <Token![,]>::default());
                     impl_generics.append_all(
                         variant
                             .generics
                             .gt_token
-                            .or(self.trait_item.generics.gt_token),
+                            .or(self.trait_def.generics.gt_token),
                     );
                 }
+                let trait_generic_args = &output_variant.variant.trait_args;
                 let mut impl_args = TokenStream::new();
                 if !impl_generic_args.is_empty() {
                     impl_args.append_all(variant.generics.lt_token);
@@ -1028,16 +1109,14 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 }
                 if define_impls {
                     macro_body.append_all(
-                        quote!(impl #impl_generics $_Name for $($_ref_path::)*#ident #impl_args $#body_ident),
+                        quote!(impl #impl_generics $_Name #trait_generic_args for $($_ref_path::)*#ident #impl_args $#body_ident),
                     );
                 }
             }
-        } else {
-            // TODO
         }
-        let ident = &self.trait_item.ident;
+        let ident = &self.trait_def.ident;
         if !define_impls {
-            if let TraitContents::Alias { path } = &self.trait_item.contents {
+            if let TraitContents::Alias { path } = &self.trait_def.contents {
                 let mut path = path.clone();
                 if let Some(segment) = path.segments.last_mut() {
                     segment.ident = Self::impl_macro_ident(&segment.ident);
@@ -1070,7 +1149,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
         });
 
         let mut impl_args = quote!(#ident, , );
-        for trait_param in &self.trait_item.generics.params {
+        for trait_param in &self.trait_def.generics.params {
             if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
                 let bounds = &type_bound_param.bounds;
                 impl_args.append_all(quote!((#bounds), ));
@@ -1079,7 +1158,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         if let Some(variants) = &self.variants {
             for output_variant in variants {
-                let variant = &output_variant.variant;
+                let variant = &output_variant.variant.variant;
                 variant.ident.to_tokens(&mut impl_args);
                 let mut generic_params = Vec::new();
                 for param in &variant.generics.params {
@@ -1108,16 +1187,21 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     }
                 });
             }
-        } else {
-            // TODO
         }
 
         tokens.append_all(quote!(#macro_ident!(#impl_args);));
     }
 }
 
-pub struct OutputTraitVariant {
+#[derive(Clone)]
+pub struct ImplVariant {
+    pub impl_generics: Generics,
+    pub trait_args: PathArguments,
     pub variant: TraitVariant,
+}
+
+pub struct OutputImplVariant {
+    pub variant: ImplVariant,
     pub impl_items: Vec<ImplItem>,
 }
 

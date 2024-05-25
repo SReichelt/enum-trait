@@ -25,16 +25,22 @@ impl MetaItemList {
 
         // Output all trait definitions first, to avoid restrictions on the order of input items.
         for item in &self.0 {
-            if let MetaItem::TraitDef(trait_item) = item {
-                let variants = if let TraitContents::Enum { variants } = &trait_item.contents {
+            if let MetaItem::TraitDef(trait_def) = item {
+                let variants = if let TraitContents::Enum { variants } = &trait_def.contents {
+                    let mut trait_generics = trait_def.generics.extract_generics();
+                    add_underscores_to_all_params(&mut trait_generics)?;
                     Some(
                         variants
                             .iter()
                             .map(|variant| {
                                 let mut variant = variant.clone();
                                 add_underscores_to_all_params(&mut variant.generics)?;
-                                Ok(OutputTraitVariant {
-                                    variant,
+                                Ok(OutputImplVariant {
+                                    variant: ImplVariant {
+                                        impl_generics: trait_generics.clone(),
+                                        trait_args: generic_args(&trait_generics),
+                                        variant,
+                                    },
                                     impl_items: Vec::new(),
                                 })
                             })
@@ -44,7 +50,7 @@ impl MetaItemList {
                     None
                 };
                 result.0.push(OutputMetaItem::TraitDef(OutputItemTraitDef {
-                    trait_item,
+                    trait_def,
                     variants,
                     impl_items: Vec::new(),
                     next_internal_item_idx: 0,
@@ -65,7 +71,8 @@ impl MetaItemList {
                     }
                     let segment = impl_item.self_trait.segments.first().unwrap();
                     let trait_def_item = result.trait_def_item(&segment.ident)?;
-                    check_token_equality(&impl_item.generics, &trait_def_item.trait_item.generics)?;
+                    let trait_def = trait_def_item.trait_def;
+                    check_token_equality(&impl_item.generics, &trait_def.generics)?;
                     Self::check_trait_impl_args(&impl_item.generics, &segment.arguments)?;
                     let impl_context = trait_def_item.impl_context();
                     let variants_known = trait_def_item.variants.is_some();
@@ -73,6 +80,7 @@ impl MetaItemList {
                         let (trait_item, variants) = result.create_trait_item(
                             item.clone(),
                             &impl_context,
+                            trait_def,
                             variants_known,
                         )?;
                         let trait_def_item = result.trait_def_item(&segment.ident)?;
@@ -124,6 +132,19 @@ impl MetaItemList {
                             stmts: vec![Stmt::Expr(expr, None)],
                         }),
                     })));
+                }
+            }
+        }
+
+        for item in &mut result.0 {
+            if let OutputMetaItem::TraitDef(trait_def_item) = item {
+                if let Some(where_clause) = &trait_def_item.trait_def.generics.where_clause {
+                    if trait_def_item.variants.is_none() {
+                        return Err(Error::new(
+                            where_clause.span(),
+                            "at least one `match` expression corresponding to `where` clause required",
+                        ));
+                    }
                 }
             }
         }

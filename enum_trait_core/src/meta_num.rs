@@ -105,7 +105,7 @@ meta! {
         Succ<N: MetaNum> => N,
     };
 
-    /*pub trait MetaNumLessThan<N: MetaNum> = MetaNum where LessThan<Self, N> = True;
+    pub trait MetaNumLessThan<N: MetaNum> = MetaNum where LessThan<Self, N> = True;
 
     pub type SubLess<M: MetaNum, N: MetaNumLessThan<M>>: MetaNumNonZero = match <M, N> {
         Succ<O: MetaNum>, Zero => Succ<O>,
@@ -117,39 +117,7 @@ meta! {
     pub type Sub<M: MetaNum, N: MetaNumLessOrEqual<M>>: MetaNum = match <M, N> {
         _, Zero => M,
         Succ<O: MetaNum>, Succ<P: MetaNumLessOrEqual<O>> => Sub<O, P>,
-    };*/
-}
-
-mod testing {
-    use super::*;
-
-    pub trait MetaNumLessThan<M: MetaNum>: MetaNum {
-        type SubFromM: MetaNumNonZero;
-    }
-
-    impl<O: MetaNum> MetaNumLessThan<Succ<O>> for Zero {
-        type SubFromM = Succ<O>;
-    }
-
-    impl<O: MetaNum, P: MetaNumLessThan<O>> MetaNumLessThan<Succ<O>> for Succ<P> {
-        type SubFromM = <P as MetaNumLessThan<O>>::SubFromM;
-    }
-
-    pub type SubLess<M, N> = <N as MetaNumLessThan<M>>::SubFromM;
-
-    pub trait MetaNumLessOrEqual<M: MetaNum>: MetaNum {
-        type SubFromM: MetaNum;
-    }
-
-    impl<M: MetaNum> MetaNumLessOrEqual<M> for Zero {
-        type SubFromM = M;
-    }
-
-    impl<O: MetaNum, P: MetaNumLessOrEqual<O>> MetaNumLessOrEqual<Succ<O>> for Succ<P> {
-        type SubFromM = <P as MetaNumLessOrEqual<O>>::SubFromM;
-    }
-
-    pub type Sub<M, N> = <N as MetaNumLessOrEqual<M>>::SubFromM;
+    };
 }
 
 pub type ToMetaNum<N> = <N as internal::ToMetaNum>::ToMetaNum;
@@ -249,6 +217,30 @@ mod tests {
         assert!(<Add<meta_num!(1), meta_num!(0)>>::VALUE == 1);
         assert!(<Add<meta_num!(1), meta_num!(1)>>::VALUE == 2);
         assert!(<Add<meta_num!(3), meta_num!(2)>>::VALUE == 5);
+    }
+
+    #[const_test]
+    const fn op_sub_less() {
+        assert!(<SubLess<meta_num!(1), meta_num!(0)>>::VALUE == 1);
+        assert!(<SubLess<meta_num!(2), meta_num!(0)>>::VALUE == 2);
+        assert!(<SubLess<meta_num!(2), meta_num!(1)>>::VALUE == 1);
+        assert!(<SubLess<meta_num!(3), meta_num!(0)>>::VALUE == 3);
+        assert!(<SubLess<meta_num!(3), meta_num!(1)>>::VALUE == 2);
+        assert!(<SubLess<meta_num!(3), meta_num!(2)>>::VALUE == 1);
+    }
+
+    #[const_test]
+    const fn op_sub() {
+        assert!(<Sub<meta_num!(0), meta_num!(0)>>::VALUE == 0);
+        assert!(<Sub<meta_num!(1), meta_num!(0)>>::VALUE == 1);
+        assert!(<Sub<meta_num!(1), meta_num!(1)>>::VALUE == 0);
+        assert!(<Sub<meta_num!(2), meta_num!(0)>>::VALUE == 2);
+        assert!(<Sub<meta_num!(2), meta_num!(1)>>::VALUE == 1);
+        assert!(<Sub<meta_num!(2), meta_num!(2)>>::VALUE == 0);
+        assert!(<Sub<meta_num!(3), meta_num!(0)>>::VALUE == 3);
+        assert!(<Sub<meta_num!(3), meta_num!(1)>>::VALUE == 2);
+        assert!(<Sub<meta_num!(3), meta_num!(2)>>::VALUE == 1);
+        assert!(<Sub<meta_num!(3), meta_num!(3)>>::VALUE == 0);
     }
 
     #[const_test]
