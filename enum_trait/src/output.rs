@@ -321,7 +321,6 @@ impl<'a> OutputMetaItemList<'a> {
                         let impl_item = f(arm.body, &body_context)?;
                         Ok((
                             Some(ImplVariant {
-                                // TODO
                                 impl_generics: build_generics(impl_generic_params),
                                 trait_args: build_path_arguments(trait_args),
                                 variant: TraitVariant {
@@ -655,10 +654,20 @@ impl<'a> OutputItemTraitDef<'a> {
                 self.variants = Some(
                     variants
                         .iter()
-                        .map(|(variant, _)| {
+                        .map(|(orig_variant, _)| {
                             // `unwrap` because `create_trait_item` only outputs `None` if
                             // `variants_known` is `true`.
-                            let mut variant = variant.clone().unwrap();
+                            let orig_variant = orig_variant.as_ref().unwrap();
+                            let mut variant = orig_variant.clone();
+                            add_underscores_to_all_params(&mut variant.impl_generics)?;
+                            variant.trait_args.substitute_all_params(
+                                &orig_variant.impl_generics,
+                                &variant.impl_generics,
+                            )?;
+                            variant.variant.generics.substitute_all_params(
+                                &orig_variant.impl_generics,
+                                &variant.impl_generics,
+                            )?;
                             add_underscores_to_all_params(&mut variant.variant.generics)?;
                             Ok(OutputImplVariant {
                                 variant,
@@ -701,6 +710,12 @@ impl<'a> OutputItemTraitDef<'a> {
                         &variant.impl_generics,
                         &existing_variant.variant.impl_generics,
                     )?;
+                    let mut expected_trait_args = existing_variant.variant.trait_args.clone();
+                    expected_trait_args.substitute_all_params(
+                        &existing_variant.variant.impl_generics,
+                        &variant.impl_generics,
+                    )?;
+                    check_token_equality(&variant.trait_args, &expected_trait_args)?;
                     let mut expected_generics = existing_trait_variant.generics.clone();
                     rename_all_params(&mut expected_generics, &variant_generics)?;
                     check_token_equality(&variant_generics, &expected_generics)?;
