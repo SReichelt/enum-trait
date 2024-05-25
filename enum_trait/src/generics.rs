@@ -103,7 +103,7 @@ pub struct MetaGenerics {
     pub lt_token: Option<Token![<]>,
     pub params: Punctuated<MetaGenericParam, Token![,]>,
     pub gt_token: Option<Token![>]>,
-    pub where_clause: Option<WhereClause>,
+    pub where_clause: Option<MetaWhereClause>,
 }
 
 impl Parse for MetaGenerics {
@@ -301,13 +301,14 @@ impl MetaGenerics {
         } else {
             (self.lt_token.clone(), self.gt_token.clone())
         };
-        let mut where_clause = self.where_clause.clone();
-        self.eliminate_in_where_clause(&mut where_clause);
+        // Omit `where` clauses of traits, as we don't have a robust proof mechanism to convince
+        // Rust that they are satisfied. Instead, we trust the user to define the variant
+        // combinations equivalently to the `where` clause.
         Generics {
             lt_token,
             params,
             gt_token,
-            where_clause,
+            where_clause: None,
         }
     }
 }
@@ -369,6 +370,29 @@ impl ToTokens for TypeBoundParam {
         self.ident.to_tokens(tokens);
         self.colon_token.to_tokens(tokens);
         self.bounds.to_tokens(tokens);
+    }
+}
+
+pub struct MetaWhereClause {
+    #[allow(unused)]
+    pub where_token: Token![where],
+    #[allow(unused)]
+    pub left_ty: Type,
+    #[allow(unused)]
+    pub right_ty: Type,
+}
+
+impl Parse for MetaWhereClause {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let where_token: Token![where] = input.parse()?;
+        let left_ty: Type = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let right_ty: Type = input.parse()?;
+        Ok(MetaWhereClause {
+            where_token,
+            left_ty,
+            right_ty,
+        })
     }
 }
 

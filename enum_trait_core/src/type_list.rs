@@ -28,7 +28,7 @@ meta! {
 
         /*pub type OptionalItemAt<I: ExtendedIndex<ItemBound, Self>>: OptionalType<ItemBound> = match <Self, I> {
             Empty, Zero => NoType,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => SomeType(Head),
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => SomeType<Head>,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
                 Tail::OptionalItemAt<P>,
         };*/

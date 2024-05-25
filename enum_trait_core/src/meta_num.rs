@@ -99,13 +99,13 @@ meta! {
         Succ<P: MetaNum> => Succ<Div2<P>>,
     };
 
-    /*pub trait MetaNumNonZero = MetaNum where Self::IsZero = False;
+    pub trait MetaNumNonZero = MetaNum where Self::IsZero = False;
 
     pub type Pred<P: MetaNumNonZero>: MetaNum = match <P> {
         Succ<N: MetaNum> => N,
     };
 
-    pub trait MetaNumLessThan<N: MetaNum> = MetaNum where LessThan<Self, N> = True;
+    /*pub trait MetaNumLessThan<N: MetaNum> = MetaNum where LessThan<Self, N> = True;
 
     pub type SubLess<M: MetaNum, N: MetaNumLessThan<M>>: MetaNumNonZero = match <M, N> {
         Succ<O: MetaNum>, Zero => Succ<O>,
@@ -123,14 +123,6 @@ meta! {
 mod testing {
     use super::*;
 
-    pub trait MetaNumNonZero: MetaNum {
-        type Pred: MetaNum;
-    }
-
-    impl<N: MetaNum> MetaNumNonZero for Succ<N> {
-        type Pred = N;
-    }
-
     pub trait MetaNumLessThan<M: MetaNum>: MetaNum {
         type SubFromM: MetaNumNonZero;
     }
@@ -143,6 +135,8 @@ mod testing {
         type SubFromM = <P as MetaNumLessThan<O>>::SubFromM;
     }
 
+    pub type SubLess<M, N> = <N as MetaNumLessThan<M>>::SubFromM;
+
     pub trait MetaNumLessOrEqual<M: MetaNum>: MetaNum {
         type SubFromM: MetaNum;
     }
@@ -154,6 +148,8 @@ mod testing {
     impl<O: MetaNum, P: MetaNumLessOrEqual<O>> MetaNumLessOrEqual<Succ<O>> for Succ<P> {
         type SubFromM = <P as MetaNumLessOrEqual<O>>::SubFromM;
     }
+
+    pub type Sub<M, N> = <N as MetaNumLessOrEqual<M>>::SubFromM;
 }
 
 pub type ToMetaNum<N> = <N as internal::ToMetaNum>::ToMetaNum;
@@ -211,6 +207,22 @@ mod tests {
         assert!(<meta_num!(2)>::VALUE == 2);
     }
 
+    #[const_test]
+    const fn even() {
+        assert!(<meta_num!(0) as MetaNum>::IsEven::VALUE);
+        assert!(!<meta_num!(1) as MetaNum>::IsEven::VALUE);
+        assert!(<meta_num!(2) as MetaNum>::IsEven::VALUE);
+        assert!(!<meta_num!(3) as MetaNum>::IsEven::VALUE);
+    }
+
+    #[const_test]
+    const fn odd() {
+        assert!(!<meta_num!(0) as MetaNum>::IsOdd::VALUE);
+        assert!(<meta_num!(1) as MetaNum>::IsOdd::VALUE);
+        assert!(!<meta_num!(2) as MetaNum>::IsOdd::VALUE);
+        assert!(<meta_num!(3) as MetaNum>::IsOdd::VALUE);
+    }
+
     #[cfg(feature = "typenum")]
     mod typenum_tests {
         use super::*;
@@ -228,22 +240,6 @@ mod tests {
         typenum::assert_type_eq!(ToMetaNum<typenum::U3>, meta_num!(3));
         typenum::assert_type_eq!(ToMetaNum<typenum::U4>, meta_num!(4));
         typenum::assert_type_eq!(ToMetaNum<typenum::U5>, meta_num!(5));
-    }
-
-    #[const_test]
-    const fn even() {
-        assert!(<meta_num!(0) as MetaNum>::IsEven::VALUE);
-        assert!(!<meta_num!(1) as MetaNum>::IsEven::VALUE);
-        assert!(<meta_num!(2) as MetaNum>::IsEven::VALUE);
-        assert!(!<meta_num!(3) as MetaNum>::IsEven::VALUE);
-    }
-
-    #[const_test]
-    const fn odd() {
-        assert!(!<meta_num!(0) as MetaNum>::IsOdd::VALUE);
-        assert!(<meta_num!(1) as MetaNum>::IsOdd::VALUE);
-        assert!(!<meta_num!(2) as MetaNum>::IsOdd::VALUE);
-        assert!(<meta_num!(3) as MetaNum>::IsOdd::VALUE);
     }
 
     #[const_test]
@@ -358,5 +354,12 @@ mod tests {
         assert!(<Div2<meta_num!(4)>>::VALUE == 2);
         assert!(<Div2<meta_num!(5)>>::VALUE == 2);
         assert!(<Div2<meta_num!(6)>>::VALUE == 3);
+    }
+
+    #[const_test]
+    const fn op_pred() {
+        assert!(<Pred<meta_num!(1)>>::VALUE == 0);
+        assert!(<Pred<meta_num!(2)>>::VALUE == 1);
+        assert!(<Pred<meta_num!(3)>>::VALUE == 2);
     }
 }

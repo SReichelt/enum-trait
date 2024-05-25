@@ -60,13 +60,27 @@ impl<'a> OutputMetaItemList<'a> {
                         .arms
                         .into_iter()
                         .map(|mut arm| {
+                            if arm.variants.len() != 1 {
+                                return Err(Error::new(
+                                    arm.variants.span(),
+                                    "exactly one variant expected",
+                                ));
+                            }
+                            let mut variant = arm.variants.into_iter().next().unwrap();
+                            let variant_span = variant.span();
+                            let Some(variant_ident) = variant.ident else {
+                                return Err(Error::new(
+                                    variant_span,
+                                    "default case not supported yet",
+                                ));
+                            };
                             rename_conflicting_params(
-                                &mut arm.variant_generics,
+                                &mut variant.generics,
                                 |param| Ok(param_context_name_conflict(param, &item_context)),
                                 |subst| arm.body.substitute_impl(subst),
                             )?;
                             let body_context =
-                                GenericsContext::WithGenerics(&arm.variant_generics, &item_context);
+                                GenericsContext::WithGenerics(&variant.generics, &item_context);
                             let ty = self.convert_type_level_expr_type(
                                 arm.body,
                                 &body_context,
@@ -86,8 +100,8 @@ impl<'a> OutputMetaItemList<'a> {
                             Ok((
                                 Some(TraitVariant {
                                     attrs: Vec::new(),
-                                    ident: arm.variant_ident,
-                                    generics: arm.variant_generics,
+                                    ident: variant_ident,
+                                    generics: variant.generics,
                                 }),
                                 ImplItem::Type(impl_item),
                             ))
@@ -141,13 +155,27 @@ impl<'a> OutputMetaItemList<'a> {
                         .arms
                         .into_iter()
                         .map(|mut arm| {
+                            if arm.variants.len() != 1 {
+                                return Err(Error::new(
+                                    arm.variants.span(),
+                                    "exactly one variant expected",
+                                ));
+                            }
+                            let mut variant = arm.variants.into_iter().next().unwrap();
+                            let variant_span = variant.span();
+                            let Some(variant_ident) = variant.ident else {
+                                return Err(Error::new(
+                                    variant_span,
+                                    "default case not supported yet",
+                                ));
+                            };
                             rename_conflicting_params(
-                                &mut arm.variant_generics,
+                                &mut variant.generics,
                                 |param| Ok(param_context_name_conflict(param, &context)),
                                 |subst| arm.body.substitute_impl(subst),
                             )?;
                             let body_context =
-                                GenericsContext::WithGenerics(&arm.variant_generics, &context);
+                                GenericsContext::WithGenerics(&variant.generics, &context);
                             let expr = self.convert_type_level_expr_const(
                                 arm.body,
                                 &body_context,
@@ -169,8 +197,8 @@ impl<'a> OutputMetaItemList<'a> {
                             Ok((
                                 Some(TraitVariant {
                                     attrs: Vec::new(),
-                                    ident: arm.variant_ident,
-                                    generics: arm.variant_generics,
+                                    ident: variant_ident,
+                                    generics: variant.generics,
                                 }),
                                 ImplItem::Const(impl_item),
                             ))
@@ -201,13 +229,27 @@ impl<'a> OutputMetaItemList<'a> {
                         .arms
                         .into_iter()
                         .map(|mut arm| {
+                            if arm.variants.len() != 1 {
+                                return Err(Error::new(
+                                    arm.variants.span(),
+                                    "exactly one variant expected",
+                                ));
+                            }
+                            let mut variant = arm.variants.into_iter().next().unwrap();
+                            let variant_span = variant.span();
+                            let Some(variant_ident) = variant.ident else {
+                                return Err(Error::new(
+                                    variant_span,
+                                    "default case not supported yet",
+                                ));
+                            };
                             rename_conflicting_params(
-                                &mut arm.variant_generics,
+                                &mut variant.generics,
                                 |param| Ok(param_context_name_conflict(param, &item_context)),
                                 |subst| arm.body.substitute_impl(subst),
                             )?;
                             let body_context =
-                                GenericsContext::WithGenerics(&arm.variant_generics, &item_context);
+                                GenericsContext::WithGenerics(&variant.generics, &item_context);
                             let expr = self.convert_type_level_expr_fn(
                                 arm.body,
                                 &body_context,
@@ -226,8 +268,8 @@ impl<'a> OutputMetaItemList<'a> {
                             Ok((
                                 Some(TraitVariant {
                                     attrs: Vec::new(),
-                                    ident: arm.variant_ident,
-                                    generics: arm.variant_generics,
+                                    ident: variant_ident,
+                                    generics: variant.generics,
                                 }),
                                 ImplItem::Fn(impl_item),
                             ))
@@ -254,7 +296,10 @@ impl<'a> OutputMetaItemList<'a> {
         let Some(TypeLevelExpr::Match(match_expr)) = expr else {
             return None;
         };
-        let Type::Path(TypePath { qself: None, path }) = &match_expr.ty else {
+        if match_expr.types.len() != 1 {
+            return None;
+        }
+        let Type::Path(TypePath { qself: None, path }) = match_expr.types.first().unwrap() else {
             return None;
         };
         if !path.is_ident(SELF_TYPE_NAME) {
@@ -425,7 +470,13 @@ impl<'a> OutputMetaItemList<'a> {
             X,
         ) -> Result<TraitImplItem>,
     ) -> Result<(Option<QSelf>, Path)> {
-        let ty = match_expr.ty.clone();
+        if match_expr.types.len() != 1 {
+            return Err(Error::new(
+                match_expr.types.span(),
+                "exactly one type expected",
+            ));
+        }
+        let ty = match_expr.types.first().unwrap().clone();
         let Some(match_ident) = Self::get_type_ident(&ty) else {
             return Err(Error::new(
                 ty.span(),
@@ -785,7 +836,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
             &self.trait_item.contents,
             TraitContents::Enum { variants: _ }
         );
-        let mut trait_generics = self.trait_item.generics.extract_generics();
+        let trait_generics = self.trait_item.generics.extract_generics();
         let trait_generics_vec: Vec<TokenStream> = trait_generics
             .params
             .iter()
@@ -832,10 +883,6 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     lifetimes: None,
                     path: path.clone(),
                 }));
-                // Omit `where` clauses of trait aliases, as we don't have a robust proof mechanism
-                // to convince Rust that they are satisfied. Instead, we trust the user to define
-                // the variant combinations equivalently to the `where` clause.
-                trait_generics.where_clause = None;
             }
         }
         let trait_item = ItemTrait {

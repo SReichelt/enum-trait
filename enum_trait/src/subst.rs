@@ -135,34 +135,44 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
         }
     }
 
-    fn subst_with_generics(&mut self, generics: &mut Generics, mut f: impl FnMut(&mut ParamSubst)) {
-        // Substitute only if none of our generic parameters shadow `param`.
-        if !param_generics_name_conflict(&self.param, generics) {
-            if !matches!(self.arg, ParamSubstArg::TestOnly) {
-                match rename_conflicting_params(
-                    generics,
-                    |param| match &self.arg {
-                        ParamSubstArg::TestOnly => Ok(false),
-                        ParamSubstArg::Param(arg) => Ok(param_name_conflict(param, arg)),
-                        ParamSubstArg::Arg(arg) => (*arg).clone().references_param(param),
-                    },
-                    &mut f,
-                ) {
-                    Ok(true) => {
-                        if let Ok(result) = &mut self.result {
-                            result.push(Span::call_site());
+    fn subst_with_generics(&mut self, generics: &mut Generics, f: impl FnMut(&mut ParamSubst)) {
+        self.subst_with_multi_generics([generics].into_iter(), f)
+    }
+
+    fn subst_with_multi_generics<'c>(
+        &mut self,
+        generics_iter: impl Iterator<Item = &'c mut Generics>,
+        mut f: impl FnMut(&mut ParamSubst),
+    ) {
+        for generics in generics_iter {
+            // Substitute only if none of our generic parameters shadow `param`.
+            if !param_generics_name_conflict(&self.param, generics) {
+                if !matches!(self.arg, ParamSubstArg::TestOnly) {
+                    match rename_conflicting_params(
+                        generics,
+                        |param| match &self.arg {
+                            ParamSubstArg::TestOnly => Ok(false),
+                            ParamSubstArg::Param(arg) => Ok(param_name_conflict(param, arg)),
+                            ParamSubstArg::Arg(arg) => (*arg).clone().references_param(param),
+                        },
+                        &mut f,
+                    ) {
+                        Ok(true) => {
+                            if let Ok(result) = &mut self.result {
+                                result.push(Span::call_site());
+                            }
                         }
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        if self.result.is_ok() {
-                            self.result = Err(error);
+                        Ok(false) => {}
+                        Err(error) => {
+                            if self.result.is_ok() {
+                                self.result = Err(error);
+                            }
                         }
                     }
                 }
+                self.visit_generics_mut(generics);
+                f(self);
             }
-            self.visit_generics_mut(generics);
-            f(self);
         }
     }
 
@@ -436,7 +446,9 @@ impl<E: Substitutable> Substitutable for TypeLevelExpr<E> {
 
 impl<E: Substitutable> Substitutable for TypeLevelExprMatch<E> {
     fn substitute_impl(&mut self, subst: &mut ParamSubst) {
-        self.ty.substitute_impl(subst);
+        for ty in &mut self.types {
+            ty.substitute_impl(subst);
+        }
         for arm in &mut self.arms {
             arm.substitute_impl(subst);
         }
@@ -445,9 +457,12 @@ impl<E: Substitutable> Substitutable for TypeLevelExprMatch<E> {
 
 impl<E: Substitutable> Substitutable for TypeLevelArm<E> {
     fn substitute_impl(&mut self, subst: &mut ParamSubst) {
-        subst.subst_with_generics(&mut self.variant_generics, |subst| {
-            self.body.substitute_impl(subst)
-        })
+        subst.subst_with_multi_generics(
+            self.variants
+                .iter_mut()
+                .map(|variant| &mut variant.generics),
+            |subst| self.body.substitute_impl(subst),
+        )
     }
 }
 
