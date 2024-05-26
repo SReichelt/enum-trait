@@ -176,6 +176,13 @@ mod tests {
     }
 
     #[const_test]
+    const fn pred() {
+        assert!(<Pred<meta_num!(1)>>::VALUE == 0);
+        assert!(<Pred<meta_num!(2)>>::VALUE == 1);
+        assert!(<Pred<meta_num!(3)>>::VALUE == 2);
+    }
+
+    #[const_test]
     const fn even() {
         assert!(<meta_num!(0) as MetaNum>::IsEven::VALUE);
         assert!(!<meta_num!(1) as MetaNum>::IsEven::VALUE);
@@ -346,12 +353,5 @@ mod tests {
         assert!(<Div2<meta_num!(4)>>::VALUE == 2);
         assert!(<Div2<meta_num!(5)>>::VALUE == 2);
         assert!(<Div2<meta_num!(6)>>::VALUE == 3);
-    }
-
-    #[const_test]
-    const fn op_pred() {
-        assert!(<Pred<meta_num!(1)>>::VALUE == 0);
-        assert!(<Pred<meta_num!(2)>>::VALUE == 1);
-        assert!(<Pred<meta_num!(3)>>::VALUE == 2);
     }
 }

@@ -1,5 +1,7 @@
-use proc_macro2::Span;
-use syn::{parse::ParseStream, punctuated::Punctuated, *};
+use proc_macro2::{Group, Span, TokenStream, TokenTree};
+use quote::ToTokens;
+use std::iter;
+use syn::{parse::ParseStream, punctuated::Punctuated, spanned::Spanned, *};
 
 pub const SELF_TYPE_NAME: &str = "Self";
 
@@ -147,4 +149,56 @@ pub fn parse_type_param_bounds(input: ParseStream) -> Result<TypeParamBounds> {
         bounds.push_punct(input.parse::<Token![+]>()?);
     }
     Ok(bounds)
+}
+
+pub fn check_token_equality<T: ToTokens>(actual: &T, expected: &T) -> Result<()> {
+    let actual_tokens = actual.to_token_stream();
+    let expected_tokens = expected.to_token_stream();
+    let mut expected_iter = expected_tokens.into_iter();
+    for actual_token in actual_tokens {
+        let Some(expected_token) = expected_iter.next() else {
+            return Err(Error::new(actual_token.span(), format!("expected end")));
+        };
+        match (&actual_token, &expected_token) {
+            (TokenTree::Group(actual_group), TokenTree::Group(expected_group)) => {
+                check_token_equality(actual_group, expected_group)?
+            }
+            _ => {
+                let actual_token_str = actual_token.to_string();
+                let expected_token_str = expected_token.to_string();
+                if actual_token_str != expected_token_str {
+                    return Err(Error::new(
+                        actual_token.span(),
+                        format!("expected `{expected_token_str}`"),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(expected_token) = expected_iter.next() {
+        let expected_token_str = expected_token.to_string();
+        return Err(Error::new(
+            actual.span(),
+            format!("expected continuation with `{expected_token_str}`"),
+        ));
+    }
+    Ok(())
+}
+
+pub fn replace_tokens(stream: TokenStream, src: &Ident, dst: &impl ToTokens) -> TokenStream {
+    let mut result = TokenStream::new();
+    for token_tree in stream {
+        match token_tree {
+            TokenTree::Group(group) => {
+                let group_result = replace_tokens(group.stream(), src, dst);
+                result.extend(iter::once(TokenTree::Group(Group::new(
+                    group.delimiter(),
+                    group_result,
+                ))));
+            }
+            TokenTree::Ident(ident) if &ident == src => dst.to_tokens(&mut result),
+            _ => result.extend(iter::once(token_tree)),
+        }
+    }
+    result
 }

@@ -1003,6 +1003,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         self.output_contents(tokens);
 
+        let name_param = quote!($_Name);
         let mut macro_params_base = quote!($_Name:ident, $($_ref_path:ident::)*, );
         let mut macro_default_args_base = quote!($_Name, $($_ref_path::)*, );
         for trait_param in &self.trait_def.generics.params {
@@ -1069,9 +1070,14 @@ impl ToTokens for OutputItemTraitDef<'_> {
                             macro_generic_params.push(quote!($#ident:ident));
                             macro_generic_args.push(quote!($#ident));
                             macro_generic_default_args.push(ident.to_token_stream());
-                            // TODO: substitute own trait with $_Name in bounds
-                            impl_generic_params
-                                .push(quote!($#ident #colon_token #bounds #eq_token #default));
+                            let adjusted_bounds = replace_tokens(
+                                bounds.to_token_stream(),
+                                &self.trait_def.ident,
+                                &name_param,
+                            );
+                            impl_generic_params.push(
+                                quote!($#ident #colon_token #adjusted_bounds #eq_token #default),
+                            );
                             impl_generic_args.push(quote!($#ident));
                         }
                         GenericParam::Const(ConstParam {

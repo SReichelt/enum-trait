@@ -1,6 +1,6 @@
-use proc_macro2::{Span, TokenTree};
+use proc_macro2::Span;
 use quote::ToTokens;
-use std::mem::replace;
+use std::{iter, mem::replace};
 use syn::{punctuated::Punctuated, spanned::Spanned, visit_mut::*, *};
 
 use crate::{expr::*, generics::*, helpers::*};
@@ -132,7 +132,7 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
     }
 
     fn subst_with_generics(&mut self, generics: &mut Generics, f: impl FnMut(&mut ParamSubst)) {
-        self.subst_with_multi_generics([generics].into_iter(), f)
+        self.subst_with_multi_generics(iter::once(generics), f)
     }
 
     fn subst_with_multi_generics<'c>(
@@ -940,40 +940,6 @@ pub fn isolate_type_param<'a>(
         },
     )?;
     Ok((type_param, params))
-}
-
-pub fn check_token_equality<T: ToTokens>(actual: &T, expected: &T) -> Result<()> {
-    let actual_tokens = actual.to_token_stream();
-    let expected_tokens = expected.to_token_stream();
-    let mut expected_iter = expected_tokens.into_iter();
-    for actual_token in actual_tokens {
-        let Some(expected_token) = expected_iter.next() else {
-            return Err(Error::new(actual_token.span(), format!("expected end")));
-        };
-        match (&actual_token, &expected_token) {
-            (TokenTree::Group(actual_group), TokenTree::Group(expected_group)) => {
-                check_token_equality(actual_group, expected_group)?
-            }
-            _ => {
-                let actual_token_str = actual_token.to_string();
-                let expected_token_str = expected_token.to_string();
-                if actual_token_str != expected_token_str {
-                    return Err(Error::new(
-                        actual_token.span(),
-                        format!("expected `{expected_token_str}`"),
-                    ));
-                }
-            }
-        }
-    }
-    if let Some(expected_token) = expected_iter.next() {
-        let expected_token_str = expected_token.to_string();
-        return Err(Error::new(
-            actual.span(),
-            format!("expected continuation with `{expected_token_str}`"),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
