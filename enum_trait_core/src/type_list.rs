@@ -39,13 +39,13 @@ meta! {
         };*/
     }
 
+    /*pub trait ValidIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
+        MetaNumLessThan<List::Len>;*/
+
+    /*pub trait ExtendedIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
+        MetaNumLessOrEqual<List::Len>;*/
+
     /*
-    pub trait ValidIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
-        MetaNumLessThan<List::Len>;
-
-    pub trait ExtendedIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
-        MetaNumLessOrEqual<List::Len>;
-
     pub trait SizedTypeList<trait ItemBound: Sized> = TypeList<ItemBound>;
 
     pub type NestedTupleWith<trait ItemBound: Sized, List: SizedTypeList<ItemBound>, T: Sized>: Sized =

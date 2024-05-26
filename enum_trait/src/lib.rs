@@ -11,6 +11,7 @@ use syn::{
 
 mod expr;
 mod generics;
+mod helpers;
 mod item;
 mod output;
 mod subst;

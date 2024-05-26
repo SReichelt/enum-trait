@@ -1,37 +1,10 @@
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{ToTokens, TokenStreamExt};
 use syn::{
     parse::{Parse, ParseBuffer, ParseStream},
     punctuated::Punctuated,
     *,
 };
-
-use crate::generics::TypeParamBounds;
-
-pub const SELF_TYPE_NAME: &str = "Self";
-
-pub fn self_type_ident(span: Span) -> Ident {
-    Ident::new(SELF_TYPE_NAME, span)
-}
-
-pub fn self_type_param(span: Span, bounds: TypeParamBounds) -> GenericParam {
-    GenericParam::Type(TypeParam {
-        attrs: Vec::new(),
-        ident: self_type_ident(span),
-        colon_token: None,
-        bounds,
-        eq_token: None,
-        default: None,
-    })
-}
-
-pub fn ident_with_prefix(ident: &Ident, prefix: &str) -> Ident {
-    Ident::new(&format!("{prefix}{ident}"), ident.span())
-}
-
-pub fn ident_with_suffix(ident: &Ident, suffix: &str) -> Ident {
-    Ident::new(&format!("{ident}{suffix}"), ident.span())
-}
 
 pub trait ParseExt: Parse {
     fn parse_match_arm_body(input: ParseStream) -> Result<Self> {

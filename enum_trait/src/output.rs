@@ -4,7 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
 use syn::{punctuated::Punctuated, spanned::Spanned, *};
 
-use crate::{expr::*, generics::*, item::*, subst::*};
+use crate::{expr::*, generics::*, helpers::*, item::*, subst::*};
 
 pub struct OutputMetaItemList<'a>(pub Vec<OutputMetaItem<'a>>);
 
@@ -200,10 +200,7 @@ impl<'a> OutputMetaItemList<'a> {
         let Some(TypeLevelExpr::Match(match_expr)) = expr else {
             return None;
         };
-        let Type::Path(TypePath { qself: None, path }) = match_expr.types.last().unwrap() else {
-            return None;
-        };
-        if !path.is_ident(SELF_TYPE_NAME) {
+        if !type_is_ident(match_expr.types.last().unwrap(), SELF_TYPE_NAME) {
             return None;
         }
         let Some(TypeLevelExpr::Match(match_expr)) = take(expr) else {
@@ -244,7 +241,7 @@ impl<'a> OutputMetaItemList<'a> {
         let mut ty_iter = match_expr.types.iter();
         let mut ty = ty_iter.next().unwrap();
         while let Some(next_ty) = ty_iter.next() {
-            let Some(match_ident) = Self::get_type_ident(&ty) else {
+            let Some(match_ident) = get_type_ident(&ty) else {
                 return Err(Error::new(
                     ty.span(),
                     "type matching is currently only supported on variables",
@@ -257,10 +254,20 @@ impl<'a> OutputMetaItemList<'a> {
                     false
                 }
             }) else {
+                let free_param_idents = free_params
+                    .iter()
+                    .filter_map(|param| {
+                        if let GenericParam::Type(type_param) = param {
+                            Some(format!("`{}`", type_param.ident))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ");
                 return Err(Error::new(
                     ty.span(),
-                    "combined matching is currently only supported for trait arguments",
-                ));
+                    format!("combined matching is currently only supported for trait arguments (`{match_ident}` not found in [{free_param_idents}])")));
             };
             matched_params.push(free_params.remove(generic_idx));
             ty = next_ty;
@@ -501,14 +508,14 @@ impl<'a> OutputMetaItemList<'a> {
         ) -> Result<TraitImplItem>,
     ) -> Result<(Option<QSelf>, Path)> {
         let ty = match_expr.types.last().unwrap().clone();
-        let Some(match_ident) = Self::get_type_ident(&ty) else {
+        let Some(match_ident) = get_type_ident(&ty) else {
             return Err(Error::new(
                 ty.span(),
                 "type matching is currently only supported on variables",
             ));
         };
         let mut expr = (match_expr, extra);
-        let (match_param, generics, arguments) =
+        let (match_param, mut extracted_params) =
             isolate_type_param(&mut expr, context, match_ident)?;
         let Some(TypeParamBound::Trait(trait_bound)) = match_param.bounds.first() else {
             return Err(Error::new(
@@ -525,33 +532,12 @@ impl<'a> OutputMetaItemList<'a> {
         let trait_segment = trait_bound.path.segments.last().unwrap();
         let trait_ident = &trait_segment.ident;
         let trait_def_item = self.trait_def_item(trait_ident)?;
-        if let PathArguments::AngleBracketed(args) = &trait_segment.arguments {
-            for (param, arg) in trait_def_item
-                .trait_def
-                .generics
-                .params
-                .iter()
-                .zip(args.args.iter())
-            {
-                if let MetaGenericParam::Generic(param) = param {
-                    if let GenericArgument::Type(Type::Path(TypePath { qself: None, path })) = arg {
-                        if let Some(arg_ident) = path.get_ident() {
-                            expr.substitute(
-                                &GenericParam::Type(TypeParam {
-                                    attrs: Vec::new(),
-                                    ident: arg_ident.clone(),
-                                    colon_token: None,
-                                    bounds: Default::default(),
-                                    eq_token: None,
-                                    default: None,
-                                }),
-                                ParamSubstArg::Param(param),
-                            )?;
-                        }
-                    }
-                }
-            }
-        }
+        Self::eliminate_exact_trait_args(
+            trait_def_item,
+            &trait_segment.arguments,
+            &mut expr,
+            &mut extracted_params,
+        )?;
         let impl_context = trait_def_item.impl_context();
         let trait_def = trait_def_item.trait_def;
         let trait_item_ident = Ident::new(
@@ -560,23 +546,21 @@ impl<'a> OutputMetaItemList<'a> {
         );
         trait_def_item.next_internal_item_idx += 1;
         let variants_known = trait_def_item.variants.is_some();
-        let (trait_item, variants) = self.create_trait_item(
-            create_trait_impl_item(
-                trait_item_ident.clone(),
-                generics,
-                TypeLevelExpr::Match(expr.0),
-                expr.1,
-            )?,
-            &impl_context,
-            trait_def,
-            variants_known,
+        let (params, args) = extracted_params.into_iter().unzip();
+        let impl_item = create_trait_impl_item(
+            trait_item_ident.clone(),
+            build_generics(params),
+            TypeLevelExpr::Match(expr.0),
+            expr.1,
         )?;
+        let (trait_item, variants) =
+            self.create_trait_item(impl_item, &impl_context, trait_def, variants_known)?;
         let trait_def_item = self.trait_def_item(trait_ident)?;
         trait_def_item.add_item(trait_item, variants)?;
         let mut segments = trait_bound.path.segments.clone();
         segments.push(PathSegment {
             ident: trait_item_ident,
-            arguments,
+            arguments: build_path_arguments(args),
         });
         Ok((
             Some(QSelf {
@@ -593,14 +577,42 @@ impl<'a> OutputMetaItemList<'a> {
         ))
     }
 
-    fn get_type_ident(ty: &Type) -> Option<&Ident> {
-        let Type::Path(type_path) = ty else {
-            return None;
-        };
-        if type_path.qself.is_some() {
-            return None;
+    fn eliminate_exact_trait_args(
+        trait_def_item: &OutputItemTraitDef,
+        arguments: &PathArguments,
+        expr: &mut impl Substitutable,
+        extracted_params: &mut Vec<(GenericParam, GenericArgument)>,
+    ) -> Result<()> {
+        if let PathArguments::AngleBracketed(args) = arguments {
+            for (param, arg) in trait_def_item
+                .trait_def
+                .generics
+                .params
+                .iter()
+                .zip(args.args.iter())
+            {
+                if let MetaGenericParam::Generic(param) = param {
+                    if let GenericArgument::Type(arg_ty) = arg {
+                        if let Some(arg_ident) = get_type_ident(arg_ty) {
+                            if let Some(extracted_param_idx) =
+                                extracted_params.iter().position(|(_, extracted_arg)| {
+                                    if let GenericArgument::Type(extracted_arg_ty) = extracted_arg {
+                                        type_is_ident(extracted_arg_ty, arg_ident)
+                                    } else {
+                                        false
+                                    }
+                                })
+                            {
+                                let (extracted_param, _) =
+                                    extracted_params.remove(extracted_param_idx);
+                                expr.substitute(&extracted_param, ParamSubstArg::Param(param))?;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        type_path.path.get_ident()
+        Ok(())
     }
 
     fn trait_item_attrs(mut attrs: Vec<Attribute>, vis: &Visibility) -> Vec<Attribute> {
@@ -929,7 +941,6 @@ impl<'a> OutputItemTraitDef<'a> {
 
 impl ToTokens for OutputItemTraitDef<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let is_enum_trait = matches!(&self.trait_def.contents, TraitContents::Enum { .. });
         let trait_generics = self.trait_def.generics.extract_generics();
         let mut supertraits: Punctuated<TypeParamBound, Token![+]>;
         match &self.trait_def.contents {
@@ -1005,7 +1016,12 @@ impl ToTokens for OutputItemTraitDef<'_> {
         let mut macro_variant_args = TokenStream::new();
         let mut macro_variant_default_args = TokenStream::new();
         let mut macro_body = TokenStream::new();
-        let define_impls = is_enum_trait || self.trait_def.generics.where_clause.is_some();
+        let define_impls = match &self.trait_def.contents {
+            TraitContents::Enum { .. } => true,
+            TraitContents::Alias { path } => {
+                self.trait_def.generics.where_clause.is_some() || has_complex_type_arg(path)
+            }
+        };
         if let Some(variants) = &self.variants {
             for output_variant in variants {
                 let variant = &output_variant.variant.variant;

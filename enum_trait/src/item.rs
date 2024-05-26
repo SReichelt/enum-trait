@@ -5,7 +5,7 @@ use syn::{
     *,
 };
 
-use crate::{expr::*, generics::*, output::*, subst::*};
+use crate::{expr::*, generics::*, helpers::*, output::*, subst::*};
 
 pub struct MetaItemList(pub Vec<MetaItem>);
 
@@ -138,12 +138,21 @@ impl MetaItemList {
 
         for item in &mut result.0 {
             if let OutputMetaItem::TraitDef(trait_def_item) = item {
-                if let Some(where_clause) = &trait_def_item.trait_def.generics.where_clause {
-                    if trait_def_item.variants.is_none() {
+                if trait_def_item.variants.is_none() {
+                    let trait_def = trait_def_item.trait_def;
+                    if let Some(where_clause) = &trait_def.generics.where_clause {
                         return Err(Error::new(
                             where_clause.span(),
                             "at least one `match` expression corresponding to `where` clause required",
                         ));
+                    }
+                    if let TraitContents::Alias { path } = &trait_def.contents {
+                        if has_complex_type_arg(path) {
+                            return Err(Error::new(
+                                path.span(),
+                                "at least one `match` expression corresponding to alias arguments required",
+                            ));
+                        }
                     }
                 }
             }
@@ -187,11 +196,11 @@ impl MetaItemList {
                             }
                         }
                         GenericParam::Type(type_param) => {
-                            let GenericArgument::Type(Type::Path(arg_path)) = arg else {
-                                return Err(Error::new_spanned(arg, "type reference expected"));
+                            let GenericArgument::Type(arg_ty) = arg else {
+                                return Err(Error::new_spanned(arg, "variable expected"));
                             };
                             let type_ident = &type_param.ident;
-                            if !arg_path.path.is_ident(type_ident) {
+                            if !type_is_ident(arg_ty, type_ident) {
                                 return Err(Error::new_spanned(
                                     arg,
                                     format!("type `{type_ident}` expected"),
@@ -199,11 +208,11 @@ impl MetaItemList {
                             }
                         }
                         GenericParam::Const(const_param) => {
-                            let GenericArgument::Const(Expr::Path(arg_path)) = arg else {
-                                return Err(Error::new_spanned(arg, "const reference expected"));
+                            let GenericArgument::Type(arg_ty) = arg else {
+                                return Err(Error::new_spanned(arg, "variable expected"));
                             };
                             let const_ident = &const_param.ident;
-                            if !arg_path.path.is_ident(const_ident) {
+                            if !type_is_ident(arg_ty, const_ident) {
                                 return Err(Error::new_spanned(
                                     arg,
                                     format!("constant `{const_ident}` expected"),
@@ -212,11 +221,11 @@ impl MetaItemList {
                         }
                     },
                     MetaGenericParam::TypeBound(type_bound_param) => {
-                        let GenericArgument::Type(Type::Path(arg_path)) = arg else {
-                            return Err(Error::new_spanned(arg, "type bound reference expected"));
+                        let GenericArgument::Type(arg_ty) = arg else {
+                            return Err(Error::new_spanned(arg, "variable expected"));
                         };
                         let type_bound_ident = &type_bound_param.ident;
-                        if !arg_path.path.is_ident(type_bound_ident) {
+                        if !type_is_ident(arg_ty, type_bound_ident) {
                             return Err(Error::new_spanned(
                                 arg,
                                 format!("type bound `{type_bound_ident}` expected"),
