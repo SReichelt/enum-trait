@@ -45,17 +45,19 @@ impl<'a> OutputMetaItemList<'a> {
     )> {
         match item {
             TraitImplItem::Type(type_item) => {
+                let mut generics = type_item.generics.clone();
+                trait_def.generics.eliminate_in_generics(&mut generics);
                 let mut trait_item = TraitItemType {
                     attrs: Self::trait_item_attrs(type_item.attrs.clone(), &type_item.vis),
                     type_token: type_item.type_token.clone(),
                     ident: type_item.ident.clone(),
-                    generics: type_item.generics.clone(),
+                    generics: generics.clone(),
                     colon_token: Default::default(),
                     bounds: type_item.bounds.clone(),
                     default: None,
                     semi_token: Default::default(),
                 };
-                let item_context = GenericsContext::WithGenerics(&type_item.generics, &context);
+                let item_context = GenericsContext::WithGenerics(&generics, &context);
                 let mut expr = Some(type_item.ty);
                 let mut variants = Self::try_implement_variants(
                     &mut expr,
@@ -74,7 +76,7 @@ impl<'a> OutputMetaItemList<'a> {
                             defaultness: None,
                             type_token: type_item.type_token.clone(),
                             ident: type_item.ident.clone(),
-                            generics: type_item.generics.clone(),
+                            generics: generics.clone(),
                             eq_token: Default::default(),
                             ty,
                             semi_token: Default::default(),
@@ -97,7 +99,7 @@ impl<'a> OutputMetaItemList<'a> {
                             defaultness: None,
                             type_token: type_item.type_token.clone(),
                             ident: type_item.ident.clone(),
-                            generics: type_item.generics.clone(),
+                            generics: generics.clone(),
                             eq_token: Default::default(),
                             ty: ty.clone(),
                             semi_token: Default::default(),
@@ -161,30 +163,28 @@ impl<'a> OutputMetaItemList<'a> {
             }
 
             TraitImplItem::Fn(fn_item) => {
+                let mut sig = fn_item.sig.clone();
+                trait_def.generics.eliminate_in_generics(&mut sig.generics);
                 let mut trait_item = TraitItemFn {
                     attrs: Self::trait_item_attrs(fn_item.attrs.clone(), &fn_item.vis),
-                    sig: fn_item.sig.clone(),
+                    sig: sig.clone(),
                     default: None,
                     semi_token: Default::default(),
                 };
-                let item_context = GenericsContext::WithGenerics(&fn_item.sig.generics, &context);
+                let item_context = GenericsContext::WithGenerics(&sig.generics, &context);
                 let mut expr = Some(fn_item.expr);
                 let variants = Self::try_implement_variants(
                     &mut expr,
                     &item_context,
                     trait_def,
                     |body, body_context| {
-                        let expr = self.convert_type_level_expr_fn(
-                            part_ident,
-                            body,
-                            &body_context,
-                            &fn_item.sig,
-                        )?;
+                        let expr =
+                            self.convert_type_level_expr_fn(part_ident, body, &body_context, &sig)?;
                         Ok(ImplItem::Fn(ImplItemFn {
                             attrs: Self::code_item_attrs(fn_item.attrs.clone()),
                             vis: Visibility::Inherited,
                             defaultness: None,
-                            sig: fn_item.sig.clone(),
+                            sig: sig.clone(),
                             block: Block {
                                 brace_token: Default::default(),
                                 stmts: vec![Stmt::Expr(expr, None)],
@@ -193,12 +193,8 @@ impl<'a> OutputMetaItemList<'a> {
                     },
                 )?;
                 if variants.is_none() {
-                    let expr = self.convert_type_level_expr_fn(
-                        part_ident,
-                        expr.unwrap(),
-                        context,
-                        &fn_item.sig,
-                    )?;
+                    let expr =
+                        self.convert_type_level_expr_fn(part_ident, expr.unwrap(), context, &sig)?;
                     trait_item.default = Some(Block {
                         brace_token: Default::default(),
                         stmts: vec![Stmt::Expr(expr, None)],
@@ -312,16 +308,18 @@ impl<'a> OutputMetaItemList<'a> {
                     match selector {
                         TypeLevelArmSelector::Specific { ident, generics } => {
                             for param in &generics.params {
-                                impl_generic_params.push(param.clone());
-                                let segment = PathSegment {
-                                    ident: ident.clone(),
-                                    arguments: generic_args(&generics),
-                                };
-                                trait_args.push(GenericArgument::Type(Type::Path(TypePath {
-                                    qself: None,
-                                    path: segment.into(),
-                                })));
+                                let mut param = param.clone();
+                                trait_def.generics.eliminate_in_generic_param(&mut param);
+                                impl_generic_params.push(param);
                             }
+                            let segment = PathSegment {
+                                ident: ident.clone(),
+                                arguments: generic_args(&generics),
+                            };
+                            trait_args.push(GenericArgument::Type(Type::Path(TypePath {
+                                qself: None,
+                                path: segment.into(),
+                            })));
                         }
                         TypeLevelArmSelector::Default { .. } => {
                             impl_generic_params.push(matched_param.clone());
@@ -615,28 +613,24 @@ impl<'a> OutputMetaItemList<'a> {
     ) -> Result<()> {
         if let PathArguments::AngleBracketed(args) = arguments {
             for (param, arg) in trait_def_item
-                .trait_def
-                .generics
+                .extracted_generics
                 .params
                 .iter()
                 .zip(args.args.iter())
             {
-                if let MetaGenericParam::Generic(param) = param {
-                    if let GenericArgument::Type(arg_ty) = arg {
-                        if let Some(arg_ident) = get_type_ident(arg_ty) {
-                            if let Some(extracted_param_idx) =
-                                extracted_params.iter().position(|(_, extracted_arg)| {
-                                    if let GenericArgument::Type(extracted_arg_ty) = extracted_arg {
-                                        type_is_ident(extracted_arg_ty, arg_ident)
-                                    } else {
-                                        false
-                                    }
-                                })
-                            {
-                                let (extracted_param, _) =
-                                    extracted_params.remove(extracted_param_idx);
-                                expr.substitute(&extracted_param, ParamSubstArg::Param(param))?;
-                            }
+                if let GenericArgument::Type(arg_ty) = arg {
+                    if let Some(arg_ident) = get_type_ident(arg_ty) {
+                        if let Some(extracted_param_idx) =
+                            extracted_params.iter().position(|(_, extracted_arg)| {
+                                if let GenericArgument::Type(extracted_arg_ty) = extracted_arg {
+                                    type_is_ident(extracted_arg_ty, arg_ident)
+                                } else {
+                                    false
+                                }
+                            })
+                        {
+                            let (extracted_param, _) = extracted_params.remove(extracted_param_idx);
+                            expr.substitute(&extracted_param, ParamSubstArg::Param(param))?;
                         }
                     }
                 }
@@ -679,6 +673,7 @@ pub enum OutputMetaItem<'a> {
 
 pub struct OutputItemTraitDef<'a> {
     pub trait_def: &'a ItemTraitDef,
+    pub extracted_generics: Generics,
     pub variants: Option<Vec<OutputImplVariant>>,
     pub impl_items: ImplPartList<TraitItem>,
     pub next_internal_item_idx: usize,
@@ -1063,7 +1058,6 @@ impl ToTokens for OutputItemTraitDef<'_> {
             pub use #trait_body_macro_ident;
         });
 
-        let trait_generics = self.trait_def.generics.extract_generics();
         let mut supertraits: Punctuated<TypeParamBound, Token![+]>;
         match &self.trait_def.contents {
             TraitContents::Enum { variants } => {
@@ -1115,7 +1109,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
             restriction: None,
             trait_token: self.trait_def.trait_token.clone(),
             ident: self.trait_def.ident.clone(),
-            generics: trait_generics.clone(),
+            generics: self.extracted_generics.clone(),
             colon_token: None,
             supertraits,
             brace_token: Default::default(),

@@ -1,7 +1,6 @@
 use enum_trait::meta;
 
-use crate::meta_bool::*;
-use crate::meta_num::*;
+use crate::{meta_bool::*, meta_num::*};
 
 meta! {
     pub enum trait TypeList<trait ItemBound: ?Sized> {
@@ -20,11 +19,11 @@ meta! {
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => Succ<Tail::Len>,
         };
 
-        /*pub type ItemAt<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self, I> {
+        pub type ItemAt<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self, I> {
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ValidIndex<ItemBound, Tail>> =>
                 Tail::ItemAt<P>,
-        };*/
+        };
 
         /*pub type OptionalItemAt<I: ExtendedIndex<ItemBound, Self>>: OptionalType<ItemBound> = match <Self, I> {
             Empty, Zero => NoType,
@@ -39,10 +38,10 @@ meta! {
         };*/
     }
 
-    /*pub trait ValidIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
-        MetaNumLessThan<List::Len>;*/
+    pub trait ValidIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
+        MetaNumLessThan<List::Len>;
 
-    /*pub trait ExtendedIndex<trait ItemBound: Sized, List: TypeList<ItemBound>> =
+    /*pub trait ExtendedIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
         MetaNumLessOrEqual<List::Len>;*/
 
     /*
@@ -101,7 +100,7 @@ mod tests {
     use super::*;
 
     type EmptyTypeList = type_list![];
-    type TwoItemTypeList = type_list![str, u8];
+    type TwoItemTypeList = type_list![&'static str, u8];
     type ThreeItemTypeList = type_list![bool; 3];
 
     #[const_test]
@@ -113,5 +112,11 @@ mod tests {
         assert!(<TwoItemTypeList as TypeList>::Len::VALUE == 2);
         assert!(!<ThreeItemTypeList as TypeList>::IsEmpty::VALUE);
         assert!(<ThreeItemTypeList as TypeList>::Len::VALUE == 3);
+    }
+
+    #[const_test]
+    const fn item_at() {
+        let _: <TwoItemTypeList as TypeList>::ItemAt<meta_num!(0)> = "test";
+        let _: <TwoItemTypeList as TypeList>::ItemAt<meta_num!(1)> = 42;
     }
 }

@@ -26,8 +26,9 @@ impl MetaItemList {
         // Output all trait definitions first, to avoid restrictions on the order of input items.
         for item in &self.0 {
             if let MetaItem::TraitDef(trait_def) = item {
+                let extracted_generics = trait_def.generics.extract_generics();
                 let variants = if let TraitContents::Enum { variants } = &trait_def.contents {
-                    let mut trait_generics = trait_def.generics.extract_generics();
+                    let mut trait_generics = extracted_generics.clone();
                     add_underscores_to_all_params(&mut trait_generics)?;
                     Some(
                         variants
@@ -51,6 +52,7 @@ impl MetaItemList {
                 };
                 result.0.push(OutputMetaItem::TraitDef(OutputItemTraitDef {
                     trait_def,
+                    extracted_generics,
                     variants,
                     impl_items: ImplPartList::new(),
                     next_internal_item_idx: 0,
