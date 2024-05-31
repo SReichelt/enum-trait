@@ -19,10 +19,10 @@ meta! {
             SomeType<T: Bound> => True,
         };
 
-        /*pub type UnwrapOr<X: Bound>: Bound = match <Self> {
+        pub type UnwrapOr<X: Bound>: Bound = match <Self> {
             NoType => X,
             SomeType<T: Bound> => T,
-        };*/
+        };
     }
 }
 

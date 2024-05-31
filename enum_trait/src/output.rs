@@ -1000,6 +1000,32 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         let trait_ident = &self.trait_def.ident;
         let name_param = quote!($_Name);
+        let mut macro_default_type_bound_params = TokenStream::new();
+        let mut macro_default_type_bound_args = TokenStream::new();
+        let mut macro_type_bound_args = TokenStream::new();
+        for trait_param in &self.trait_def.generics.params {
+            if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
+                let ident = &type_bound_param.ident;
+                macro_default_type_bound_params.extend(quote!(($($#ident:tt)+), ));
+                macro_default_type_bound_args.extend(quote!(($($#ident)+), ));
+                let bounds = &type_bound_param.bounds;
+                macro_type_bound_args.extend(quote!((#bounds), ));
+            }
+        }
+        let macro_params_base =
+            quote!($_Name:ident, $($_ref_path:ident::)*, #macro_default_type_bound_params);
+        let macro_default_args_base =
+            quote!($_Name, $($_ref_path::)*, #macro_default_type_bound_args);
+
+        let generalize = |mut tokens| {
+            for trait_param in &self.trait_def.generics.params {
+                if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
+                    let ident = &type_bound_param.ident;
+                    tokens = replace_tokens(tokens, ident, &quote!($($#ident)+));
+                }
+            }
+            replace_tokens(tokens, trait_ident, &name_param)
+        };
 
         let trait_body_macro_ident = Self::trait_body_macro_ident(trait_ident);
         let mut macro_contents = TokenStream::new();
@@ -1014,17 +1040,19 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         segment.ident = Self::trait_body_macro_ident(&segment.ident);
                         segment.arguments = PathArguments::None;
                     }
-                    macro_body.extend(quote!(#path!(#part_ident, $_Name);));
+                    let mut ref_path = TokenStream::new();
+                    Self::output_ref_path(&path, &mut ref_path);
+                    macro_body.extend(quote!(#path!(#part_ident, $_Name, #ref_path, #macro_default_type_bound_args);));
                 }
             }
             let mut impl_items = TokenStream::new();
             for impl_item in &part.items {
                 impl_item.to_tokens(&mut impl_items);
             }
-            macro_body.extend(replace_tokens(impl_items, trait_ident, &name_param));
-            macro_contents.extend(quote!((#part_ident, $_Name:ident) => { #macro_body };));
+            macro_body.extend(generalize(impl_items));
+            macro_contents.extend(quote!((#part_ident, #macro_params_base) => { #macro_body };));
             trait_items.push(TraitItem::Verbatim(
-                quote!(#trait_body_macro_ident!(#part_ident, #trait_ident);),
+                quote!(#trait_body_macro_ident!(#part_ident, #trait_ident, , #macro_type_bound_args);),
             ));
         }
         tokens.extend(quote! {
@@ -1097,15 +1125,6 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         self.output_contents(tokens);
 
-        let mut macro_params_base = quote!([$($_Part:tt)*], $_Name:ident, $($_ref_path:ident::)*, );
-        let mut macro_default_args_base = quote!([$($_Part)*], $_Name, $($_ref_path::)*, );
-        for trait_param in &self.trait_def.generics.params {
-            if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
-                let ident = &type_bound_param.ident;
-                macro_params_base.extend(quote!(($($#ident:tt)+), ));
-                macro_default_args_base.extend(quote!(($($#ident)+), ));
-            }
-        }
         let mut macro_variant_params = TokenStream::new();
         let mut macro_variant_args = TokenStream::new();
         let mut macro_variant_default_args = TokenStream::new();
@@ -1159,10 +1178,9 @@ impl ToTokens for OutputItemTraitDef<'_> {
                             macro_generic_params.push(quote!($#ident:ident));
                             macro_generic_args.push(quote!($#ident));
                             macro_generic_default_args.push(ident.to_token_stream());
-                            let adjusted_bounds =
-                                replace_tokens(bounds.to_token_stream(), trait_ident, &name_param);
+                            let generalized_bounds = generalize(bounds.to_token_stream());
                             impl_generic_params.push(
-                                quote!($#ident #colon_token #adjusted_bounds #eq_token #default),
+                                quote!($#ident #colon_token #generalized_bounds #eq_token #default),
                             );
                             impl_generic_args.push(quote!($#ident));
                         }
@@ -1210,7 +1228,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 }
                 let body_ident = ident_with_suffix(ident, "__Body");
                 let body = quote! {
-                    $($_ref_path::)*#impl_body_macro_ident!([$($_Part)*], #ident, $_Name, $($_ref_path::)*);
+                    $($_ref_path::)*#impl_body_macro_ident!([$($_Part)*], #ident, #macro_default_args_base);
                     $($#body_ident)*
                 };
                 macro_variant_params.extend(quote!(#ident #macro_generics => {
@@ -1258,15 +1276,11 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     for impl_item in &part.items {
                         impl_item.to_tokens(&mut impl_items);
                     }
-                    impl_body_macro_body.extend(replace_tokens(
-                        impl_items,
-                        trait_ident,
-                        &name_param,
-                    ));
+                    impl_body_macro_body.extend(generalize(impl_items));
                     impl_body_macro_contents.extend(
-                        quote!(([#part_ident $(, $($_OtherPart:tt)*)?], #ident, $_Name:ident, $($_ref_path:ident::)*) => {
+                        quote!(([#part_ident $(, $($_OtherPart:tt)*)?], #ident, #macro_params_base) => {
                             #impl_body_macro_body
-                            $($_ref_path::)*#impl_body_macro_ident!([$($($_OtherPart)*)?], #ident, $_Name, $($_ref_path::)*);
+                            $($_ref_path::)*#impl_body_macro_ident!([$($($_OtherPart)*)?], #ident, #macro_default_args_base);
                         };)
                     );
                 }
@@ -1276,7 +1290,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
             #[macro_export]
             macro_rules! #impl_body_macro_ident {
                 #impl_body_macro_contents
-                ([], $_VariantName:ident, $_Name:ident, $($_ref_path:ident::)*) => {};
+                ([], $_VariantName:ident, #macro_params_base) => {};
             }
             pub use #impl_body_macro_ident;
         });
@@ -1289,22 +1303,24 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 }
                 let mut ref_path = TokenStream::new();
                 Self::output_ref_path(&path, &mut ref_path);
-                macro_body.extend(quote!(#path!([Self], $_Name, #ref_path, #macro_variant_args);));
+                macro_body.extend(quote!(#path!([Self], $_Name, #ref_path, #macro_default_type_bound_args #macro_variant_args);));
             }
         }
         let impl_macro_ident = Self::impl_macro_ident(trait_ident);
+        let impl_macro_params_base = quote!([$($_Part:tt)*], #macro_params_base);
+        let impl_macro_default_args_base = quote!([$($_Part)*], #macro_default_args_base);
         let macro_default_matcher = if macro_variant_params.is_empty() {
             TokenStream::new()
         } else {
-            quote!((#macro_params_base) => {
-                $($_ref_path::)*#impl_macro_ident!(#macro_default_args_base #macro_variant_default_args);
+            quote!((#impl_macro_params_base) => {
+                $($_ref_path::)*#impl_macro_ident!(#impl_macro_default_args_base #macro_variant_default_args);
             };)
         };
         tokens.extend(quote! {
             #[macro_export]
             macro_rules! #impl_macro_ident {
                 #macro_default_matcher
-                (#macro_params_base #macro_variant_params) => {
+                (#impl_macro_params_base #macro_variant_params) => {
                     #macro_body
                 };
             }
@@ -1316,14 +1332,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
             self.impl_items.0.iter().map(|part| &part.ident),
             <Token![,]>::default(),
         );
-        let mut impl_args = quote!([#parts], #trait_ident, , );
-        for trait_param in &self.trait_def.generics.params {
-            if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
-                let bounds = &type_bound_param.bounds;
-                impl_args.extend(quote!((#bounds), ));
-            }
-        }
-
+        let mut impl_args = quote!([#parts], #trait_ident, , #macro_type_bound_args);
         if let Some(variants) = &self.variants {
             for output_variant in variants {
                 let variant = &output_variant.variant.variant;

@@ -12,6 +12,13 @@ meta! {
         True => Option<T>,
     };
 
+    pub fn to_unconditional_option<B: MetaBoolWithOption, T>(obj: OptionalOption<B, T>) -> Option<T> {
+        match <B> {
+            False => Some(obj),
+            True => obj,
+        }
+    }
+
     pub fn unwrap_if_necessary<B: MetaBoolWithOption, T>(obj: OptionalOption<B, T>) -> T {
         match <B> {
             False => obj,
