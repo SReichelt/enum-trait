@@ -1,6 +1,6 @@
 use expr::TypeLevelLambda;
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens, TokenStreamExt};
+use quote::{quote, ToTokens};
 use subst::{ParamSubstArg, Substitutable};
 use syn::{
     parse::{Parse, ParseStream},
@@ -75,6 +75,6 @@ pub fn const_test(
     let ident = item_fn.sig.ident.clone();
     let mut output_tokens = quote!(#[test]);
     item_fn.to_tokens(&mut output_tokens);
-    output_tokens.append_all(quote!(const _: () = #ident();));
+    output_tokens.extend(quote!(const _: () = #ident();));
     output_tokens.into()
 }

@@ -917,8 +917,7 @@ pub fn isolate_type_param<'a>(
                                 expr_params_orig_len,
                                 &mut params,
                             )?;
-                            let self_param =
-                                self_type_param(Span::call_site(), type_param.bounds.clone());
+                            let self_param = self_type_param(None, type_param.bounds.clone());
                             expr.substitute(param, ParamSubstArg::Param(&self_param))?;
                             expr_params.pop();
                             return Ok(Some((type_param, params)));

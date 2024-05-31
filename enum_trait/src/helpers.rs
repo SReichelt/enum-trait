@@ -5,11 +5,11 @@ use syn::{parse::ParseStream, punctuated::Punctuated, spanned::Spanned, *};
 
 pub const SELF_TYPE_NAME: &str = "Self";
 
-pub fn self_type_ident(span: Span) -> Ident {
-    Ident::new(SELF_TYPE_NAME, span)
+pub fn self_type_ident(span: Option<Span>) -> Ident {
+    Ident::new(SELF_TYPE_NAME, span.unwrap_or_else(Span::call_site))
 }
 
-pub fn self_type_param(span: Span, bounds: TypeParamBounds) -> GenericParam {
+pub fn self_type_param(span: Option<Span>, bounds: TypeParamBounds) -> GenericParam {
     GenericParam::Type(TypeParam {
         attrs: Vec::new(),
         ident: self_type_ident(span),

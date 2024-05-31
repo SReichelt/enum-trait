@@ -41,7 +41,7 @@ impl MetaItemList {
                                         trait_args: generic_args(&trait_generics),
                                         variant,
                                     },
-                                    impl_items: Vec::new(),
+                                    impl_items: ImplPartList::new(),
                                 })
                             })
                             .collect::<Result<_>>()?,
@@ -52,7 +52,7 @@ impl MetaItemList {
                 result.0.push(OutputMetaItem::TraitDef(OutputItemTraitDef {
                     trait_def,
                     variants,
-                    impl_items: Vec::new(),
+                    impl_items: ImplPartList::new(),
                     next_internal_item_idx: 0,
                 }));
             }
@@ -76,15 +76,17 @@ impl MetaItemList {
                     Self::check_trait_impl_args(&impl_item.generics, &segment.arguments)?;
                     let impl_context = trait_def_item.impl_context();
                     let variants_known = trait_def_item.variants.is_some();
+                    let self_type_ident = self_type_ident(None);
                     for item in &impl_item.items {
                         let (trait_item, variants) = result.create_trait_item(
+                            &self_type_ident,
                             item.clone(),
                             &impl_context,
                             trait_def,
                             variants_known,
                         )?;
                         let trait_def_item = result.trait_def_item(&segment.ident)?;
-                        trait_def_item.add_item(trait_item, variants)?;
+                        trait_def_item.add_item(&self_type_ident, trait_item, variants)?;
                     }
                 }
 
@@ -92,6 +94,7 @@ impl MetaItemList {
                     let context =
                         GenericsContext::WithGenerics(&type_item.generics, &GenericsContext::Empty);
                     let ty = result.convert_type_level_expr_type(
+                        &type_item.ident,
                         type_item.ty.clone(),
                         &context,
                         &type_item.bounds,
@@ -119,6 +122,7 @@ impl MetaItemList {
                         &GenericsContext::Empty,
                     );
                     let expr = result.convert_type_level_expr_fn(
+                        &fn_item.sig.ident,
                         fn_item.expr.clone(),
                         &context,
                         &fn_item.sig,
