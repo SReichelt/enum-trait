@@ -1126,9 +1126,8 @@ impl ToTokens for OutputItemTraitDef<'_> {
         let impl_body_macro_ident = Self::impl_body_macro_ident(trait_ident);
         let mut impl_body_macro_contents = TokenStream::new();
         if let Some(variants) = &self.variants {
-            for output_variant in variants {
+            for (variant_idx, output_variant) in variants.iter().enumerate() {
                 let variant = &output_variant.variant.variant;
-                let ident = &variant.ident;
                 let mut variant_generics = variant.generics.clone();
                 self.trait_def
                     .generics
@@ -1144,7 +1143,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     .map(ToTokens::to_token_stream)
                     .collect();
                 let mut impl_generic_args = Vec::new();
-                let param_prefix = format!("{ident}_");
+                let param_prefix = format!("Var_{variant_idx}_");
                 for param in &variant_generics.params {
                     match param {
                         GenericParam::Lifetime(LifetimeParam {
@@ -1220,18 +1219,20 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         .gt_token
                         .to_tokens(&mut macro_default_arg_generics);
                 }
-                let body_ident = ident_with_suffix(ident, "__Body");
+                let body_ident = Ident::new(&format!("{param_prefix}_Body"), Span::call_site());
                 let body = quote! {
-                    $($_ref_path::)*#impl_body_macro_ident!([$($_Part)*], #ident, #macro_default_args_base);
+                    $($_ref_path::)*#impl_body_macro_ident!([$($_Part)*], #variant_idx, #macro_default_args_base);
                     $($#body_ident)*
                 };
-                macro_variant_params.extend(quote!(#ident #macro_generics => {
+                let variant_ident = &variant.ident;
+                macro_variant_params.extend(quote!(#variant_ident #macro_generics => {
                     $($#body_ident:tt)*
                 }));
-                macro_variant_args.extend(quote!(#ident #macro_arg_generics => {
+                macro_variant_args.extend(quote!(#variant_ident #macro_arg_generics => {
                     #body
                 }));
-                macro_variant_default_args.extend(quote!(#ident #macro_default_arg_generics => {}));
+                macro_variant_default_args
+                    .extend(quote!(#variant_ident #macro_default_arg_generics => {}));
                 let mut impl_generics = TokenStream::new();
                 if !impl_generic_params.is_empty() {
                     variant
@@ -1256,7 +1257,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 if independent_impls {
                     macro_body.extend(
                         quote! {
-                            impl #impl_generics $_Name #trait_generic_args for $($_ref_path::)*#ident #impl_args {
+                            impl #impl_generics $_Name #trait_generic_args for $($_ref_path::)*#variant_ident #impl_args {
                                 #body
                             }
                         },
@@ -1272,9 +1273,9 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     }
                     impl_body_macro_body.extend(generalize(impl_items));
                     impl_body_macro_contents.extend(
-                        quote!(([#part_ident $(, $($_OtherPart:tt)*)?], #ident, #macro_params_base) => {
+                        quote!(([#part_ident $(, $($_OtherPart:tt)*)?], #variant_idx, #macro_params_base) => {
                             #impl_body_macro_body
-                            $($_ref_path::)*#impl_body_macro_ident!([$($($_OtherPart)*)?], #ident, #macro_default_args_base);
+                            $($_ref_path::)*#impl_body_macro_ident!([$($($_OtherPart)*)?], #variant_idx, #macro_default_args_base);
                         };)
                     );
                 }
@@ -1284,7 +1285,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
             #[macro_export]
             macro_rules! #impl_body_macro_ident {
                 #impl_body_macro_contents
-                ([], $_VariantName:ident, #macro_params_base) => {};
+                ([], $_VariantIdx:literal, #macro_params_base) => {};
             }
             pub use #impl_body_macro_ident;
         });

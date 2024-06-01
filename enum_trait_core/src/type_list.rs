@@ -1,6 +1,6 @@
 use enum_trait::meta;
 
-use crate::{meta_bool::*, meta_num::*};
+use crate::{meta_bool::*, meta_num::*, optional_type::*};
 
 meta! {
     pub enum trait TypeList<trait ItemBound: ?Sized> {
@@ -32,6 +32,15 @@ meta! {
                 Tail::OptionalItemAt<P>,
         };*/
 
+        /// Equivalent to `OptionalItemAt` followed by `UnwrapOr`, but avoids the type-erasure
+        /// problem of `OptionalItemAt`.
+        pub type ItemAtOr<I: ExtendedIndex<ItemBound, Self>, X: ItemBound>: ItemBound = match <Self, I> {
+            Empty, Zero => X,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
+                Tail::ItemAtOr<P, X>,
+        };
+
         /*pub type MapToRefs<'a>: SizedTypeList<Deref<Target: ItemBound> + 'a> = match <Self> {
             Empty => Empty,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a Head, Tail::MapToRefs<'a>>,
@@ -41,8 +50,8 @@ meta! {
     pub trait ValidIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
         MetaNumLessThan<List::Len>;
 
-    /*pub trait ExtendedIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
-        MetaNumLessOrEqual<List::Len>;*/
+    pub trait ExtendedIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
+        MetaNumLessOrEqual<List::Len>;
 
     /*
     pub trait SizedTypeList<trait ItemBound: Sized> = TypeList<ItemBound>;
