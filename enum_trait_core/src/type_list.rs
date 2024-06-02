@@ -19,31 +19,46 @@ meta! {
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => Succ<Tail::Len>,
         };
 
-        pub type ItemAt<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self, I> {
+        pub type Get<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self, I> {
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ValidIndex<ItemBound, Tail>> =>
-                Tail::ItemAt<P>,
+                Tail::Get<P>,
         };
 
-        /*pub type OptionalItemAt<I: ExtendedIndex<ItemBound, Self>>: OptionalType<ItemBound> = match <Self, I> {
+        pub type GetOpt<I: ExtendedIndex<ItemBound, Self>>: OptionalType<ItemBound> = match <Self, I> {
             Empty, Zero => NoType,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => SomeType<Head>,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
-                Tail::OptionalItemAt<P>,
-        };*/
+                Tail::GetOpt<P>,
+        };
 
-        /// Equivalent to `OptionalItemAt` followed by `UnwrapOr`, but avoids the type-erasure
-        /// problem of `OptionalItemAt`.
-        pub type ItemAtOr<I: ExtendedIndex<ItemBound, Self>, X: ItemBound>: ItemBound = match <Self, I> {
+        /// Equivalent to `GetOpt` followed by `UnwrapOr`, but avoids the type-erasure problem of
+        /// `GetOpt`.
+        pub type GetOr<I: ExtendedIndex<ItemBound, Self>, X: ItemBound>: ItemBound = match <Self, I> {
             Empty, Zero => X,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
-                Tail::ItemAtOr<P, X>,
+                Tail::GetOr<P, X>,
+        };
+
+        pub type Append<T: ItemBound>: TypeList<ItemBound> = match <Self> {
+            Empty => NonEmpty<T, Empty>,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<Head, Tail::Append<T>>,
+        };
+
+        pub type AppendAll<List: TypeList<ItemBound>>: TypeList<ItemBound> = match <Self> {
+            Empty => List,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<Head, Tail::AppendAll<List>>,
         };
 
         /*pub type MapToRefs<'a>: SizedTypeList<Deref<Target: ItemBound> + 'a> = match <Self> {
             Empty => Empty,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a Head, Tail::MapToRefs<'a>>,
+        };*/
+
+        /*pub type MapMutToRefs<'a>: SizedTypeList<DerefMut<Target: ItemBound> + 'a> = match <Self> {
+            Empty => Empty,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a mut Head, Tail::MapToMutRefs<'a>>,
         };*/
     }
 
@@ -73,7 +88,7 @@ meta! {
         I: ExtendedIndex<ItemBound, List>
     >(
         tuple: &NestedTupleWith<ItemBound, List, T>,
-    ) -> &<List::OptionalItemAt<I> as OptionalType<ItemBound>>::UnwrapOr<T> {
+    ) -> &<List::GetOr<I, T> {
         match <List, I> {
             Empty, Zero => tuple,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => &tuple.0,
@@ -124,8 +139,12 @@ mod tests {
     }
 
     #[const_test]
-    const fn item_at() {
-        let _: <TwoItemTypeList as TypeList>::ItemAt<meta_num!(0)> = "test";
-        let _: <TwoItemTypeList as TypeList>::ItemAt<meta_num!(1)> = 42;
+    const fn getters() {
+        let _: <TwoItemTypeList as TypeList>::Get<meta_num!(0)> = "test";
+        let _: <TwoItemTypeList as TypeList>::Get<meta_num!(1)> = 42;
+
+        let _: <TwoItemTypeList as TypeList>::GetOr<meta_num!(0), bool> = "test";
+        let _: <TwoItemTypeList as TypeList>::GetOr<meta_num!(1), bool> = 42;
+        let _: <TwoItemTypeList as TypeList>::GetOr<meta_num!(2), bool> = true;
     }
 }

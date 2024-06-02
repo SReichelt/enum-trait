@@ -2,7 +2,7 @@ use std::{borrow::Cow, mem::take};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{punctuated::Punctuated, spanned::Spanned, *};
+use syn::{punctuated::Punctuated, spanned::Spanned, visit_mut::VisitMut, *};
 
 use crate::{expr::*, generics::*, helpers::*, item::*, subst::*};
 
@@ -45,19 +45,19 @@ impl<'a> OutputMetaItemList<'a> {
     )> {
         match item {
             TraitImplItem::Type(type_item) => {
-                let mut generics = type_item.generics.clone();
-                trait_def.generics.eliminate_in_generics(&mut generics);
                 let mut trait_item = TraitItemType {
                     attrs: Self::trait_item_attrs(type_item.attrs.clone(), &type_item.vis),
                     type_token: type_item.type_token.clone(),
                     ident: type_item.ident.clone(),
-                    generics: generics.clone(),
+                    generics: type_item.generics.clone(),
                     colon_token: Default::default(),
                     bounds: type_item.bounds.clone(),
                     default: None,
                     semi_token: Default::default(),
                 };
-                let item_context = GenericsContext::WithGenerics(&generics, &context);
+                RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                    .visit_trait_item_type_mut(&mut trait_item);
+                let item_context = GenericsContext::WithGenerics(&trait_item.generics, &context);
                 let mut expr = Some(type_item.ty);
                 let mut variants = Self::try_implement_variants(
                     &mut expr,
@@ -68,15 +68,15 @@ impl<'a> OutputMetaItemList<'a> {
                             part_ident,
                             body,
                             &body_context,
-                            &type_item.bounds,
+                            &trait_item.bounds,
                         )?;
                         Ok(ImplItem::Type(ImplItemType {
                             attrs: Self::code_item_attrs(type_item.attrs.clone()),
                             vis: Visibility::Inherited,
                             defaultness: None,
-                            type_token: type_item.type_token.clone(),
-                            ident: type_item.ident.clone(),
-                            generics: generics.clone(),
+                            type_token: trait_item.type_token.clone(),
+                            ident: trait_item.ident.clone(),
+                            generics: trait_item.generics.clone(),
                             eq_token: Default::default(),
                             ty,
                             semi_token: Default::default(),
@@ -88,7 +88,7 @@ impl<'a> OutputMetaItemList<'a> {
                         part_ident,
                         expr.unwrap(),
                         &item_context,
-                        &type_item.bounds,
+                        &trait_item.bounds,
                     )?;
                     if variants_known {
                         // Prefer individual impls over default in trait because the latter is
@@ -97,9 +97,9 @@ impl<'a> OutputMetaItemList<'a> {
                             attrs: Self::code_item_attrs(type_item.attrs.clone()),
                             vis: Visibility::Inherited,
                             defaultness: None,
-                            type_token: type_item.type_token.clone(),
-                            ident: type_item.ident.clone(),
-                            generics: generics.clone(),
+                            type_token: trait_item.type_token.clone(),
+                            ident: trait_item.ident.clone(),
+                            generics: trait_item.generics.clone(),
                             eq_token: Default::default(),
                             ty: ty.clone(),
                             semi_token: Default::default(),
@@ -123,6 +123,8 @@ impl<'a> OutputMetaItemList<'a> {
                     default: None,
                     semi_token: Default::default(),
                 };
+                RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                    .visit_trait_item_const_mut(&mut trait_item);
                 let mut expr = Some(const_item.expr);
                 let variants = Self::try_implement_variants(
                     &mut expr,
@@ -133,17 +135,17 @@ impl<'a> OutputMetaItemList<'a> {
                             part_ident,
                             body,
                             &body_context,
-                            &const_item.ty,
+                            &trait_item.ty,
                         )?;
                         Ok(ImplItem::Const(ImplItemConst {
                             attrs: Self::code_item_attrs(const_item.attrs.clone()),
                             vis: Visibility::Inherited,
                             defaultness: None,
-                            const_token: const_item.const_token.clone(),
-                            ident: const_item.ident.clone(),
-                            generics: Default::default(),
+                            const_token: trait_item.const_token.clone(),
+                            ident: trait_item.ident.clone(),
+                            generics: trait_item.generics.clone(),
                             colon_token: Default::default(),
-                            ty: const_item.ty.clone(),
+                            ty: trait_item.ty.clone(),
                             eq_token: Default::default(),
                             expr,
                             semi_token: Default::default(),
@@ -155,7 +157,7 @@ impl<'a> OutputMetaItemList<'a> {
                         part_ident,
                         expr.unwrap(),
                         context,
-                        &const_item.ty,
+                        &trait_item.ty,
                     )?;
                     trait_item.default = Some((Default::default(), expr));
                 }
@@ -163,28 +165,33 @@ impl<'a> OutputMetaItemList<'a> {
             }
 
             TraitImplItem::Fn(fn_item) => {
-                let mut sig = fn_item.sig.clone();
-                trait_def.generics.eliminate_in_generics(&mut sig.generics);
                 let mut trait_item = TraitItemFn {
                     attrs: Self::trait_item_attrs(fn_item.attrs.clone(), &fn_item.vis),
-                    sig: sig.clone(),
+                    sig: fn_item.sig.clone(),
                     default: None,
                     semi_token: Default::default(),
                 };
-                let item_context = GenericsContext::WithGenerics(&sig.generics, &context);
+                RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                    .visit_trait_item_fn_mut(&mut trait_item);
+                let item_context =
+                    GenericsContext::WithGenerics(&trait_item.sig.generics, &context);
                 let mut expr = Some(fn_item.expr);
                 let variants = Self::try_implement_variants(
                     &mut expr,
                     &item_context,
                     trait_def,
                     |body, body_context| {
-                        let expr =
-                            self.convert_type_level_expr_fn(part_ident, body, &body_context, &sig)?;
+                        let expr = self.convert_type_level_expr_fn(
+                            part_ident,
+                            body,
+                            &body_context,
+                            &trait_item.sig,
+                        )?;
                         Ok(ImplItem::Fn(ImplItemFn {
                             attrs: Self::code_item_attrs(fn_item.attrs.clone()),
                             vis: Visibility::Inherited,
                             defaultness: None,
-                            sig: sig.clone(),
+                            sig: trait_item.sig.clone(),
                             block: Block {
                                 brace_token: Default::default(),
                                 stmts: vec![Stmt::Expr(expr, None)],
@@ -193,8 +200,12 @@ impl<'a> OutputMetaItemList<'a> {
                     },
                 )?;
                 if variants.is_none() {
-                    let expr =
-                        self.convert_type_level_expr_fn(part_ident, expr.unwrap(), context, &sig)?;
+                    let expr = self.convert_type_level_expr_fn(
+                        part_ident,
+                        expr.unwrap(),
+                        context,
+                        &trait_item.sig,
+                    )?;
                     trait_item.default = Some(Block {
                         brace_token: Default::default(),
                         stmts: vec![Stmt::Expr(expr, None)],
@@ -309,7 +320,8 @@ impl<'a> OutputMetaItemList<'a> {
                         TypeLevelArmSelector::Specific { ident, generics } => {
                             for param in &generics.params {
                                 let mut param = param.clone();
-                                trait_def.generics.eliminate_in_generic_param(&mut param);
+                                RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                                    .visit_generic_param_mut(&mut param);
                                 impl_generic_params.push(param);
                             }
                             let segment = PathSegment {
@@ -813,9 +825,11 @@ impl<'a> OutputItemTraitDef<'a> {
 
     fn output_variant_def(&self, variant: &TraitVariant, tokens: &mut TokenStream) {
         let mut variant_generics = variant.generics.clone();
+        RemoveTypeBoundParamsFromPathArguments(&self.trait_def.generics)
+            .visit_generics_mut(&mut variant_generics);
         self.trait_def
             .generics
-            .eliminate_in_generics(&mut variant_generics);
+            .erase_in_generics(&mut variant_generics);
 
         let phantom_types = phantom_types(&variant_generics);
         let struct_item = ItemStruct {
@@ -1131,7 +1145,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 let mut variant_generics = variant.generics.clone();
                 self.trait_def
                     .generics
-                    .eliminate_in_generics(&mut variant_generics);
+                    .erase_in_generics(&mut variant_generics);
                 let mut macro_generic_params = Vec::new();
                 let mut macro_generic_args = Vec::new();
                 let mut macro_generic_default_args = Vec::new();
@@ -1140,7 +1154,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     .impl_generics
                     .params
                     .iter()
-                    .map(ToTokens::to_token_stream)
+                    .map(|param| generalize(param.to_token_stream()))
                     .collect();
                 let mut impl_generic_args = Vec::new();
                 let param_prefix = format!("Var_{variant_idx}_");

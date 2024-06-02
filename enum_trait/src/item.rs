@@ -2,6 +2,7 @@ use syn::{
     parse::{Parse, ParseBuffer, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
+    visit_mut::VisitMut,
     *,
 };
 
@@ -144,7 +145,12 @@ impl MetaItemList {
 
         for item in &mut result.0 {
             if let OutputMetaItem::TraitDef(trait_def_item) = item {
-                if trait_def_item.variants.is_none() {
+                if let Some(variants) = &mut trait_def_item.variants {
+                    for variant in variants {
+                        RemoveTypeBoundParamsFromPathArguments(&trait_def_item.trait_def.generics)
+                            .visit_generics_mut(&mut variant.variant.variant.generics);
+                    }
+                } else {
                     let trait_def = trait_def_item.trait_def;
                     if let Some(where_clause) = &trait_def.generics.where_clause {
                         return Err(Error::new(
