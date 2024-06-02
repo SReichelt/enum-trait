@@ -65,6 +65,7 @@ impl<'a> OutputMetaItemList<'a> {
                     trait_def,
                     |body, body_context| {
                         let ty = self.convert_type_level_expr_type(
+                            &type_item.attrs,
                             part_ident,
                             body,
                             &body_context,
@@ -85,6 +86,7 @@ impl<'a> OutputMetaItemList<'a> {
                 )?;
                 if variants.is_none() {
                     let ty = self.convert_type_level_expr_type(
+                        &type_item.attrs,
                         part_ident,
                         expr.unwrap(),
                         &item_context,
@@ -132,6 +134,7 @@ impl<'a> OutputMetaItemList<'a> {
                     trait_def,
                     |body, body_context| {
                         let expr = self.convert_type_level_expr_const(
+                            &const_item.attrs,
                             part_ident,
                             body,
                             &body_context,
@@ -154,6 +157,7 @@ impl<'a> OutputMetaItemList<'a> {
                 )?;
                 if variants.is_none() {
                     let expr = self.convert_type_level_expr_const(
+                        &const_item.attrs,
                         part_ident,
                         expr.unwrap(),
                         context,
@@ -182,6 +186,7 @@ impl<'a> OutputMetaItemList<'a> {
                     trait_def,
                     |body, body_context| {
                         let expr = self.convert_type_level_expr_fn(
+                            &fn_item.attrs,
                             part_ident,
                             body,
                             &body_context,
@@ -201,6 +206,7 @@ impl<'a> OutputMetaItemList<'a> {
                 )?;
                 if variants.is_none() {
                     let expr = self.convert_type_level_expr_fn(
+                        &fn_item.attrs,
                         part_ident,
                         expr.unwrap(),
                         context,
@@ -376,6 +382,7 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn convert_type_level_expr_type(
         &mut self,
+        attrs: &Vec<Attribute>,
         part_ident: &Ident,
         expr: TypeLevelExpr<Type>,
         context: &GenericsContext,
@@ -388,7 +395,7 @@ impl<'a> OutputMetaItemList<'a> {
             context,
             |ident, generics, expr, bounds| {
                 Ok(TraitImplItem::Type(TraitImplItemType {
-                    attrs: Vec::new(),
+                    attrs: attrs.clone(),
                     vis: Visibility::Inherited,
                     type_token: Default::default(),
                     ident,
@@ -403,6 +410,7 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn convert_type_level_expr_const(
         &mut self,
+        attrs: &Vec<Attribute>,
         part_ident: &Ident,
         expr: TypeLevelExpr<Expr>,
         context: &GenericsContext,
@@ -421,7 +429,7 @@ impl<'a> OutputMetaItemList<'a> {
                     );
                 }
                 Ok(TraitImplItem::Const(TraitImplItemConst {
-                    attrs: Vec::new(),
+                    attrs: attrs.clone(),
                     vis: Visibility::Inherited,
                     const_token: Default::default(),
                     ident,
@@ -441,6 +449,7 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn convert_type_level_expr_fn(
         &mut self,
+        attrs: &Vec<Attribute>,
         part_ident: &Ident,
         expr: TypeLevelExpr<Expr>,
         context: &GenericsContext,
@@ -453,7 +462,7 @@ impl<'a> OutputMetaItemList<'a> {
             context,
             |ident, generics, expr, sig| {
                 Ok(TraitImplItem::Fn(TraitImplItemFn {
-                    attrs: Vec::new(),
+                    attrs: attrs.clone(),
                     vis: Visibility::Inherited,
                     sig: Signature {
                         ident,
@@ -1060,6 +1069,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
             }
             macro_body.extend(generalize(impl_items));
             macro_contents.extend(quote!((#part_ident, #macro_params_base) => { #macro_body };));
+            // TODO: inline macros instead, to fix IDE navigation
             trait_items.push(TraitItem::Verbatim(
                 quote!(#trait_body_macro_ident!(#part_ident, #trait_ident, , #macro_type_bound_args);),
             ));

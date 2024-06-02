@@ -97,6 +97,7 @@ impl MetaItemList {
                     let context =
                         GenericsContext::WithGenerics(&type_item.generics, &GenericsContext::Empty);
                     let ty = result.convert_type_level_expr_type(
+                        &type_item.attrs,
                         &type_item.ident,
                         type_item.ty.clone(),
                         &context,
@@ -125,6 +126,7 @@ impl MetaItemList {
                         &GenericsContext::Empty,
                     );
                     let expr = result.convert_type_level_expr_fn(
+                        &fn_item.attrs,
                         &fn_item.sig.ident,
                         fn_item.expr.clone(),
                         &context,

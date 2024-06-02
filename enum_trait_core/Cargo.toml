@@ -5,4 +5,8 @@ edition = "2021"
 
 [dependencies]
 enum_trait = { path = "../enum_trait" }
+generic-array = { version = "1.0.0", optional = true }
 typenum = { version = "1.17.0", optional = true }
+
+[features]
+generic-array = ["typenum", "dep:generic-array"]

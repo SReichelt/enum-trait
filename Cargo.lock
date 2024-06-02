@@ -16,6 +16,7 @@ name = "enum_trait_core"
 version = "0.1.0"
 dependencies = [
  "enum_trait",
+ "generic-array",
  "typenum",
 ]
 
@@ -25,6 +26,15 @@ version = "0.1.0"
 dependencies = [
  "enum_trait",
  "enum_trait_core",
+]
+
+[[package]]
+name = "generic-array"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe739944a5406424e080edccb6add95685130b9f160d5407c639c7df0c5836b0"
+dependencies = [
+ "typenum",
 ]
 
 [[package]]

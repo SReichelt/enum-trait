@@ -39,11 +39,18 @@ meta! {
         };
 
         /// Converts this `MetaNum` instance to the corresponding type of the `typenum` crate.
-        #[cfg(feature = "typenum")]
+        #[cfg(all(feature = "typenum", not(feature = "generic-array")))]
         pub type ToTypeNum: typenum::Unsigned = match <Self> {
             Zero => typenum::UTerm,
             Succ<N: MetaNum> => typenum::UInt<<Div2Ceil<N> as MetaNum>::ToTypeNum,
                                               <N::IsEven as MetaBool>::ToTypeNum>,
+        };
+
+        /// Converts this `MetaNum` instance to the corresponding type of the `typenum` crate.
+        #[cfg(feature = "generic-array")]
+        pub type ToTypeNum: typenum::Unsigned + generic_array::ArrayLength = match <Self> {
+            Zero => typenum::UTerm,
+            Succ<N: MetaNum> => ConstructUInt<<Div2Ceil<N> as MetaNum>::ToTypeNum, N::IsEven>,
         };
     }
 
@@ -129,10 +136,6 @@ pub mod internal {
         type ToMetaNum: MetaNum;
     }
 
-    impl ToMetaNum for () {
-        type ToMetaNum = Zero;
-    }
-
     #[cfg(feature = "typenum")]
     impl ToMetaNum for typenum::UTerm {
         type ToMetaNum = Zero;
@@ -215,6 +218,30 @@ mod tests {
         typenum::assert_type_eq!(ToMetaNum<typenum::U3>, meta_num!(3));
         typenum::assert_type_eq!(ToMetaNum<typenum::U4>, meta_num!(4));
         typenum::assert_type_eq!(ToMetaNum<typenum::U5>, meta_num!(5));
+    }
+
+    #[cfg(feature = "generic-array")]
+    mod generic_array_tests {
+        use generic_array::{arr, GenericArray};
+
+        use super::*;
+
+        struct CalculatedGenericArray<T, M: MetaNum, N: MetaNum>(
+            GenericArray<T, <Add<M, N> as MetaNum>::ToTypeNum>,
+        );
+
+        impl<T, M: MetaNum, N: MetaNum> CalculatedGenericArray<T, M, N> {
+            fn divide(&self) -> (&[T], &[T]) {
+                self.0.split_at(M::VALUE)
+            }
+        }
+
+        #[test]
+        fn calculated_generic_array() {
+            let a =
+                CalculatedGenericArray::<i32, meta_num!(3), meta_num!(2)>(arr![1, 2, 3, 11, 12]);
+            assert_eq!(a.divide(), ([1, 2, 3].as_slice(), [11, 12].as_slice()));
+        }
     }
 
     #[const_test]

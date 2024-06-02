@@ -62,6 +62,14 @@ meta! {
         False => Not<A>,
         True => A,
     };
+
+    #[cfg(feature = "generic-array")]
+    pub type ConstructUInt<N: typenum::Unsigned + generic_array::ArrayLength, B: MetaBool>:
+        typenum::Unsigned + generic_array::ArrayLength =
+        match <B> {
+            False => typenum::UInt<N, typenum::B0>,
+            True => typenum::UInt<N, typenum::B1>,
+        };
 }
 
 /// Converts the given `bool` constant to a `MetaBool` instance.

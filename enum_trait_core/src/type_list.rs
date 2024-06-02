@@ -50,16 +50,6 @@ meta! {
             Empty => List,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<Head, Tail::AppendAll<List>>,
         };
-
-        /*pub type MapToRefs<'a>: SizedTypeList<Deref<Target: ItemBound> + 'a> = match <Self> {
-            Empty => Empty,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a Head, Tail::MapToRefs<'a>>,
-        };*/
-
-        /*pub type MapMutToRefs<'a>: SizedTypeList<DerefMut<Target: ItemBound> + 'a> = match <Self> {
-            Empty => Empty,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a mut Head, Tail::MapToMutRefs<'a>>,
-        };*/
     }
 
     pub trait ValidIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
@@ -97,6 +87,16 @@ meta! {
         }
     }
     */
+
+    /*pub type MapToRefs<'a, trait ItemBound: ?Sized + 'a, List: TypeList<ItemBound>>: SizedTypeList = match <List> {
+        Empty => Empty,
+        NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a Head, MapToRefs<'a, ItemBound, Tail>>,
+    };
+
+    pub type MapToMutRefs<'a, trait ItemBound: ?Sized + 'a, List: TypeList<ItemBound>>: SizedTypeList = match <List> {
+        Empty => Empty,
+        NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a mut Head, MapToMutRefs<'a, ItemBound, Tail>>,
+    };*/
 }
 
 #[macro_export]
