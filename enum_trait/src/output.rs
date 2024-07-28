@@ -1,4 +1,4 @@
-use std::{borrow::Cow, mem::take};
+use std::{borrow::Cow, collections::HashMap, mem::take};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
@@ -34,15 +34,12 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn create_trait_item(
         &mut self,
-        part_ident: &Ident,
+        part_ident: &mut Option<Ident>,
         item: TraitImplItem,
         context: &GenericsContext,
         trait_def: &ItemTraitDef,
         variants_known: bool,
-    ) -> Result<(
-        TraitItem,
-        Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>,
-    )> {
+    ) -> Result<OutputTraitItemDesc> {
         match item {
             TraitImplItem::Type(type_item) => {
                 let mut trait_item = TraitItemType {
@@ -59,18 +56,22 @@ impl<'a> OutputMetaItemList<'a> {
                     .visit_trait_item_type_mut(&mut trait_item);
                 let item_context = GenericsContext::WithGenerics(&trait_item.generics, &context);
                 let mut expr = Some(type_item.ty);
+                let mut dependent_idents = Vec::new();
                 let mut variants = Self::try_implement_variants(
                     &mut expr,
                     &item_context,
                     trait_def,
-                    |body, body_context| {
-                        let ty = self.convert_type_level_expr_type(
+                    &mut dependent_idents,
+                    |body, body_context, _| {
+                        let mut ty = self.convert_type_level_expr_type(
                             &type_item.attrs,
                             part_ident,
                             body,
                             &body_context,
-                            &trait_item.bounds,
+                            &type_item.bounds,
                         )?;
+                        RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                            .visit_type_mut(&mut ty);
                         Ok(ImplItem::Type(ImplItemType {
                             attrs: Self::code_item_attrs(type_item.attrs.clone()),
                             vis: Visibility::Inherited,
@@ -85,14 +86,17 @@ impl<'a> OutputMetaItemList<'a> {
                     },
                 )?;
                 if variants.is_none() {
-                    let ty = self.convert_type_level_expr_type(
+                    let mut ty = self.convert_type_level_expr_type(
                         &type_item.attrs,
                         part_ident,
                         expr.unwrap(),
                         &item_context,
-                        &trait_item.bounds,
+                        &type_item.bounds,
                     )?;
+                    RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                        .visit_type_mut(&mut ty);
                     if variants_known {
+                        let span = ty.span();
                         // Prefer individual impls over default in trait because the latter is
                         // currently unstable.
                         let impl_item = ImplItemType {
@@ -103,15 +107,29 @@ impl<'a> OutputMetaItemList<'a> {
                             ident: trait_item.ident.clone(),
                             generics: trait_item.generics.clone(),
                             eq_token: Default::default(),
-                            ty: ty.clone(),
+                            ty,
                             semi_token: Default::default(),
                         };
-                        variants = Some((vec![(None, ImplItem::Type(impl_item))], ty.span()));
+                        variants = Some((vec![(None, ImplItem::Type(impl_item))], span));
                     } else {
                         trait_item.default = Some((Default::default(), ty));
                     }
                 }
-                Ok((TraitItem::Type(trait_item), variants))
+                trait_def.collect_dependencies_in_generics(
+                    &type_item.generics,
+                    part_ident,
+                    &mut dependent_idents,
+                );
+                trait_def.collect_dependencies_in_bounds(
+                    &type_item.bounds,
+                    part_ident,
+                    &mut dependent_idents,
+                );
+                Ok(OutputTraitItemDesc {
+                    item: TraitItem::Type(trait_item),
+                    variants,
+                    dependent_idents,
+                })
             }
 
             TraitImplItem::Const(const_item) => {
@@ -128,18 +146,26 @@ impl<'a> OutputMetaItemList<'a> {
                 RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
                     .visit_trait_item_const_mut(&mut trait_item);
                 let mut expr = Some(const_item.expr);
+                let mut dependent_idents = Vec::new();
                 let variants = Self::try_implement_variants(
                     &mut expr,
                     context,
                     trait_def,
-                    |body, body_context| {
-                        let expr = self.convert_type_level_expr_const(
+                    &mut dependent_idents,
+                    |body, body_context, substitutions| {
+                        let mut expr = self.convert_type_level_expr_const(
                             &const_item.attrs,
                             part_ident,
                             body,
                             &body_context,
-                            &trait_item.ty,
+                            &const_item.ty,
                         )?;
+                        RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                            .visit_expr_mut(&mut expr);
+                        let mut ty = trait_item.ty.clone();
+                        for (subst_param, subst_arg) in substitutions {
+                            ty.substitute(subst_param, ParamSubstArg::Arg(subst_arg))?;
+                        }
                         Ok(ImplItem::Const(ImplItemConst {
                             attrs: Self::code_item_attrs(const_item.attrs.clone()),
                             vis: Visibility::Inherited,
@@ -148,7 +174,7 @@ impl<'a> OutputMetaItemList<'a> {
                             ident: trait_item.ident.clone(),
                             generics: trait_item.generics.clone(),
                             colon_token: Default::default(),
-                            ty: trait_item.ty.clone(),
+                            ty,
                             eq_token: Default::default(),
                             expr,
                             semi_token: Default::default(),
@@ -156,16 +182,22 @@ impl<'a> OutputMetaItemList<'a> {
                     },
                 )?;
                 if variants.is_none() {
-                    let expr = self.convert_type_level_expr_const(
+                    let mut expr = self.convert_type_level_expr_const(
                         &const_item.attrs,
                         part_ident,
                         expr.unwrap(),
                         context,
-                        &trait_item.ty,
+                        &const_item.ty,
                     )?;
+                    RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                        .visit_expr_mut(&mut expr);
                     trait_item.default = Some((Default::default(), expr));
                 }
-                Ok((TraitItem::Const(trait_item), variants))
+                Ok(OutputTraitItemDesc {
+                    item: TraitItem::Const(trait_item),
+                    variants,
+                    dependent_idents,
+                })
             }
 
             TraitImplItem::Fn(fn_item) => {
@@ -180,23 +212,31 @@ impl<'a> OutputMetaItemList<'a> {
                 let item_context =
                     GenericsContext::WithGenerics(&trait_item.sig.generics, &context);
                 let mut expr = Some(fn_item.expr);
+                let mut dependent_idents = Vec::new();
                 let variants = Self::try_implement_variants(
                     &mut expr,
                     &item_context,
                     trait_def,
-                    |body, body_context| {
-                        let expr = self.convert_type_level_expr_fn(
+                    &mut dependent_idents,
+                    |body, body_context, substitutions| {
+                        let mut expr = self.convert_type_level_expr_fn(
                             &fn_item.attrs,
                             part_ident,
                             body,
                             &body_context,
-                            &trait_item.sig,
+                            &fn_item.sig,
                         )?;
+                        RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                            .visit_expr_mut(&mut expr);
+                        let mut sig = trait_item.sig.clone();
+                        for (subst_param, subst_arg) in substitutions {
+                            sig.substitute(subst_param, ParamSubstArg::Arg(subst_arg))?;
+                        }
                         Ok(ImplItem::Fn(ImplItemFn {
                             attrs: Self::code_item_attrs(fn_item.attrs.clone()),
                             vis: Visibility::Inherited,
                             defaultness: None,
-                            sig: trait_item.sig.clone(),
+                            sig,
                             block: Block {
                                 brace_token: Default::default(),
                                 stmts: vec![Stmt::Expr(expr, None)],
@@ -205,20 +245,31 @@ impl<'a> OutputMetaItemList<'a> {
                     },
                 )?;
                 if variants.is_none() {
-                    let expr = self.convert_type_level_expr_fn(
+                    let mut expr = self.convert_type_level_expr_fn(
                         &fn_item.attrs,
                         part_ident,
                         expr.unwrap(),
                         context,
-                        &trait_item.sig,
+                        &fn_item.sig,
                     )?;
+                    RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
+                        .visit_expr_mut(&mut expr);
                     trait_item.default = Some(Block {
                         brace_token: Default::default(),
                         stmts: vec![Stmt::Expr(expr, None)],
                     });
                     trait_item.semi_token = None;
                 }
-                Ok((TraitItem::Fn(trait_item), variants))
+                trait_def.collect_dependencies_in_generics(
+                    &fn_item.sig.generics,
+                    part_ident,
+                    &mut dependent_idents,
+                );
+                Ok(OutputTraitItemDesc {
+                    item: TraitItem::Fn(trait_item),
+                    variants,
+                    dependent_idents,
+                })
             }
         }
     }
@@ -242,11 +293,17 @@ impl<'a> OutputMetaItemList<'a> {
         expr: &mut Option<TypeLevelExpr<E>>,
         context: &GenericsContext,
         trait_def: &ItemTraitDef,
-        f: impl FnMut(TypeLevelExpr<E>, &GenericsContext) -> Result<ImplItem>,
+        dependent_idents: &mut Vec<Ident>,
+        f: impl FnMut(
+            TypeLevelExpr<E>,
+            &GenericsContext,
+            &[(&GenericParam, GenericArgument)],
+        ) -> Result<ImplItem>,
     ) -> Result<Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>> {
         if let Some(match_expr) = Self::get_self_match(expr) {
             let variants_span = match_expr.span();
-            let variants_impls = Self::implement_variants(match_expr, context, trait_def, f)?;
+            let variants_impls =
+                Self::implement_variants(match_expr, context, trait_def, dependent_idents, f)?;
             Ok(Some((variants_impls, variants_span)))
         } else {
             Ok(None)
@@ -257,7 +314,8 @@ impl<'a> OutputMetaItemList<'a> {
         match_expr: TypeLevelExprMatch<E>,
         context: &GenericsContext,
         trait_def: &ItemTraitDef,
-        mut f: impl FnMut(E, &GenericsContext) -> Result<ImplItem>,
+        dependent_idents: &mut Vec<Ident>,
+        mut f: impl FnMut(E, &GenericsContext, &[(&GenericParam, GenericArgument)]) -> Result<ImplItem>,
     ) -> Result<Vec<(Option<ImplVariant>, ImplItem)>> {
         let mut free_params: Vec<GenericParam> = trait_def
             .generics
@@ -317,6 +375,7 @@ impl<'a> OutputMetaItemList<'a> {
                     impl_generic_params.push(param.clone());
                     trait_args.push(generic_param_arg(param, None));
                 }
+                let mut substitutions = Vec::new();
                 let mut selector_iter = arm.selectors.into_iter();
                 let mut selector = selector_iter.next().unwrap();
                 let mut matched_param_iter = matched_params.iter();
@@ -324,20 +383,20 @@ impl<'a> OutputMetaItemList<'a> {
                     let matched_param = matched_param_iter.next().unwrap();
                     match selector {
                         TypeLevelArmSelector::Specific { ident, generics } => {
+                            trait_def.collect_dependencies_in_generics(
+                                &generics,
+                                &mut None,
+                                dependent_idents,
+                            );
+                            let arg = Self::create_arm_arg(&ident, &generics);
                             for param in &generics.params {
                                 let mut param = param.clone();
                                 RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
                                     .visit_generic_param_mut(&mut param);
                                 impl_generic_params.push(param);
                             }
-                            let segment = PathSegment {
-                                ident: ident.clone(),
-                                arguments: generic_args(&generics),
-                            };
-                            trait_args.push(GenericArgument::Type(Type::Path(TypePath {
-                                qself: None,
-                                path: segment.into(),
-                            })));
+                            trait_args.push(arg.clone());
+                            substitutions.push((matched_param, arg));
                         }
                         TypeLevelArmSelector::Default { .. } => {
                             impl_generic_params.push(matched_param.clone());
@@ -357,7 +416,7 @@ impl<'a> OutputMetaItemList<'a> {
                             |subst| arm.body.substitute_impl(subst),
                         )?;
                         let body_context = GenericsContext::WithGenerics(&generics, &context);
-                        let impl_item = f(arm.body, &body_context)?;
+                        let impl_item = f(arm.body, &body_context, &substitutions)?;
                         Ok((
                             Some(ImplVariant {
                                 impl_generics: build_generics(impl_generic_params),
@@ -380,10 +439,21 @@ impl<'a> OutputMetaItemList<'a> {
             .collect::<Result<_>>()
     }
 
+    fn create_arm_arg(ident: &Ident, generics: &Generics) -> GenericArgument {
+        let segment = PathSegment {
+            ident: ident.clone(),
+            arguments: generic_args(&generics),
+        };
+        GenericArgument::Type(Type::Path(TypePath {
+            qself: None,
+            path: segment.into(),
+        }))
+    }
+
     pub fn convert_type_level_expr_type(
         &mut self,
         attrs: &Vec<Attribute>,
-        part_ident: &Ident,
+        part_ident: &Option<Ident>,
         expr: TypeLevelExpr<Type>,
         context: &GenericsContext,
         bounds: &TypeParamBounds,
@@ -411,7 +481,7 @@ impl<'a> OutputMetaItemList<'a> {
     pub fn convert_type_level_expr_const(
         &mut self,
         attrs: &Vec<Attribute>,
-        part_ident: &Ident,
+        part_ident: &Option<Ident>,
         expr: TypeLevelExpr<Expr>,
         context: &GenericsContext,
         ty: &Type,
@@ -450,7 +520,7 @@ impl<'a> OutputMetaItemList<'a> {
     pub fn convert_type_level_expr_fn(
         &mut self,
         attrs: &Vec<Attribute>,
-        part_ident: &Ident,
+        part_ident: &Option<Ident>,
         expr: TypeLevelExpr<Expr>,
         context: &GenericsContext,
         sig: &Signature,
@@ -511,7 +581,7 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn convert_type_level_expr<E: Substitutable, X: Substitutable>(
         &mut self,
-        part_ident: &Ident,
+        part_ident: &Option<Ident>,
         expr: TypeLevelExpr<E>,
         extra: X,
         context: &GenericsContext,
@@ -540,7 +610,7 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn convert_type_level_match_expr<E: Substitutable, X: Substitutable>(
         &mut self,
-        part_ident: &Ident,
+        part_ident: &Option<Ident>,
         match_expr: TypeLevelExprMatch<TypeLevelExpr<E>>,
         extra: X,
         context: &GenericsContext,
@@ -597,15 +667,16 @@ impl<'a> OutputMetaItemList<'a> {
             TypeLevelExpr::Match(expr.0),
             expr.1,
         )?;
-        let (trait_item, variants) = self.create_trait_item(
-            part_ident,
+        let mut part_ident = part_ident.clone();
+        let trait_item_desc = self.create_trait_item(
+            &mut part_ident,
             impl_item,
             &impl_context,
             trait_def,
             variants_known,
         )?;
         let trait_def_item = self.trait_def_item(trait_ident)?;
-        trait_def_item.add_item(part_ident, trait_item, variants)?;
+        trait_def_item.add_item(&part_ident, trait_item_desc)?;
         let mut segments = trait_bound.path.segments.clone();
         segments.push(PathSegment {
             ident: trait_item_ident,
@@ -692,23 +763,30 @@ pub enum OutputMetaItem<'a> {
     Item(Item),
 }
 
+pub struct OutputTraitItemDesc {
+    item: TraitItem,
+    variants: Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>,
+    dependent_idents: Vec<Ident>,
+}
+
 pub struct OutputItemTraitDef<'a> {
     pub trait_def: &'a ItemTraitDef,
     pub extracted_generics: Generics,
     pub variants: Option<Vec<OutputImplVariant>>,
     pub impl_items: ImplPartList<TraitItem>,
+    pub dependent_idents: Vec<Ident>,
     pub next_internal_item_idx: usize,
 }
 
 impl<'a> OutputItemTraitDef<'a> {
     pub fn add_item(
         &mut self,
-        part_ident: &Ident,
-        item: TraitItem,
-        variants: Option<(Vec<(Option<ImplVariant>, ImplItem)>, Span)>,
+        part_ident: &Option<Ident>,
+        item: OutputTraitItemDesc,
     ) -> Result<()> {
-        self.impl_items.add_item(part_ident, item);
-        if let Some((variants, variants_span)) = variants {
+        self.impl_items.add_item(part_ident, item.item);
+
+        if let Some((variants, variants_span)) = item.variants {
             if self.variants.is_none() {
                 self.variants = Some(
                     variants
@@ -795,6 +873,13 @@ impl<'a> OutputItemTraitDef<'a> {
                 ));
             }
         }
+
+        for ident in item.dependent_idents {
+            if !self.dependent_idents.contains(&ident) {
+                self.dependent_idents.push(ident);
+            }
+        }
+
         Ok(())
     }
 
@@ -813,15 +898,15 @@ impl<'a> OutputItemTraitDef<'a> {
     }
 
     fn trait_body_macro_ident(ident: &Ident) -> Ident {
-        ident_with_prefix(ident, "__trait_body__")
+        ident_with_prefix(ident, "__trait_body__", false)
     }
 
     fn impl_macro_ident(ident: &Ident) -> Ident {
-        ident_with_prefix(ident, "__trait_impl__")
+        ident_with_prefix(ident, "__trait_impl__", false)
     }
 
     fn impl_body_macro_ident(ident: &Ident) -> Ident {
-        ident_with_prefix(ident, "__trait_impl_body__")
+        ident_with_prefix(ident, "__trait_impl_body__", false)
     }
 
     fn output_contents(&self, tokens: &mut TokenStream) {
@@ -1012,28 +1097,44 @@ impl ToTokens for OutputItemTraitDef<'_> {
         let independent_impls = match &self.trait_def.contents {
             TraitContents::Enum { .. } => true,
             TraitContents::Alias { path } => {
-                self.trait_def.generics.where_clause.is_some() || has_complex_type_arg(path)
+                self.trait_def.generics.where_clause.is_some()
+                    || path.arguments.has_complex_type_arg()
             }
         };
 
         let trait_ident = &self.trait_def.ident;
-        let name_param = quote!($_Name);
+        let name_param_ident = Ident::new("_Name", Span::call_site());
+        let name_param = quote!($#name_param_ident);
+        let ref_path_param_ident = Ident::new("_ref_path", Span::call_site());
+        let ref_path_param = quote!($#ref_path_param_ident);
+        let mut macro_args_base = HashMap::from([
+            (
+                name_param_ident.clone(),
+                MacroArg::ident(trait_ident.clone()),
+            ),
+            (ref_path_param_ident.clone(), MacroArg::Multi(Vec::new())),
+        ]);
         let mut macro_default_type_bound_params = TokenStream::new();
         let mut macro_default_type_bound_args = TokenStream::new();
-        let mut macro_type_bound_args = TokenStream::new();
         for trait_param in &self.trait_def.generics.params {
             if let MetaGenericParam::TypeBound(type_bound_param) = trait_param {
                 let ident = &type_bound_param.ident;
                 macro_default_type_bound_params.extend(quote!(($($#ident:tt)+), ));
                 macro_default_type_bound_args.extend(quote!(($($#ident)+), ));
-                let bounds = &type_bound_param.bounds;
-                macro_type_bound_args.extend(quote!((#bounds), ));
+                macro_args_base.insert(
+                    ident.clone(),
+                    MacroArg::multi_tokens(&type_bound_param.bounds),
+                );
             }
         }
-        let macro_params_base =
-            quote!($_Name:ident, $($_ref_path:ident::)*, #macro_default_type_bound_params);
-        let macro_default_args_base =
-            quote!($_Name, $($_ref_path::)*, #macro_default_type_bound_args);
+        let mut macro_params_base = quote!(#name_param:ident, $(#ref_path_param:ident::)*, #macro_default_type_bound_params);
+        let mut macro_default_args_base =
+            quote!(#name_param, $(#ref_path_param::)*, #macro_default_type_bound_args);
+        for ident in &self.dependent_idents {
+            macro_params_base.extend(quote!(trait #ident = ($($#ident:tt)+), ));
+            macro_default_args_base.extend(quote!(trait #ident = ($($#ident)+), ));
+            macro_args_base.insert(ident.clone(), MacroArg::multi_tokens(ident));
+        }
 
         let generalize = |mut tokens| {
             for trait_param in &self.trait_def.generics.params {
@@ -1042,25 +1143,42 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     tokens = replace_tokens(tokens, ident, &quote!($($#ident)+));
                 }
             }
+            for ident in &self.dependent_idents {
+                tokens = replace_tokens(tokens, ident, &quote!($($#ident)+));
+            }
             replace_tokens(tokens, trait_ident, &name_param)
         };
+
+        let mut macro_parent_type_bound_args = macro_default_type_bound_args;
+        if let TraitContents::Alias { path } = &self.trait_def.contents {
+            for arg in &path.arguments.args {
+                if let MetaGenericArgument::TraitAlias(alias_arg) = arg {
+                    let ident = &alias_arg.ident;
+                    let value = generalize(alias_arg.value.to_token_stream());
+                    macro_parent_type_bound_args.extend(quote!(trait #ident = (#value), ));
+                }
+            }
+        }
 
         let trait_body_macro_ident = Self::trait_body_macro_ident(trait_ident);
         let mut macro_contents = TokenStream::new();
         let mut trait_items = Vec::new();
         for part in &self.impl_items.0 {
-            let part_ident = &part.ident;
             let mut macro_body = TokenStream::new();
-            if part_ident == SELF_TYPE_NAME && !independent_impls {
-                if let TraitContents::Alias { path } = &self.trait_def.contents {
-                    let mut path = path.clone();
-                    if let Some(segment) = path.segments.last_mut() {
-                        segment.ident = Self::trait_body_macro_ident(&segment.ident);
-                        segment.arguments = PathArguments::None;
+            if let Some(part_ident) = &part.ident {
+                if part_ident == SELF_TYPE_NAME && !independent_impls {
+                    if let TraitContents::Alias { path } = &self.trait_def.contents {
+                        let mut path = path.extract_path();
+                        if let Some(segment) = path.segments.last_mut() {
+                            segment.ident = Self::trait_body_macro_ident(&segment.ident);
+                            segment.arguments = PathArguments::None;
+                        }
+                        let mut ref_path = TokenStream::new();
+                        Self::output_ref_path(&path, &mut ref_path);
+                        macro_body.extend(quote!(
+                            #path!(#part_ident, #name_param, #ref_path, #macro_parent_type_bound_args);
+                        ));
                     }
-                    let mut ref_path = TokenStream::new();
-                    Self::output_ref_path(&path, &mut ref_path);
-                    macro_body.extend(quote!(#path!(#part_ident, $_Name, #ref_path, #macro_default_type_bound_args);));
                 }
             }
             let mut impl_items = TokenStream::new();
@@ -1068,11 +1186,18 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 impl_item.to_tokens(&mut impl_items);
             }
             macro_body.extend(generalize(impl_items));
-            macro_contents.extend(quote!((#part_ident, #macro_params_base) => { #macro_body };));
-            // TODO: inline macros instead, to fix IDE navigation
-            trait_items.push(TraitItem::Verbatim(
-                quote!(#trait_body_macro_ident!(#part_ident, #trait_ident, , #macro_type_bound_args);),
-            ));
+            if let Some(part_ident) = &part.ident {
+                macro_contents.extend(quote!(
+                    (#part_ident, #macro_params_base) => { #macro_body };
+                ));
+            }
+            // Here, we would like to invoke the macro which we have just constructed (similarly to
+            // the invocation we output when defining a trait alias). Unfortunately, Rust Analyzer
+            // currently doesn't seem to expand such invocations transparently enough, so that IDE
+            // navigation fails. Therefore, we expand the macro ourselves, essentially duplicating
+            // its contents in our output.
+            let expanded_macro = expand_macro_body(macro_body, &macro_args_base);
+            trait_items.push(TraitItem::Verbatim(expanded_macro));
         }
         tokens.extend(quote! {
             #[macro_export]
@@ -1116,12 +1241,15 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 }
             }
             TraitContents::Alias { path } => {
+                let mut path = path.extract_path();
+                RemoveTypeBoundParamsFromPathArguments(&self.trait_def.generics)
+                    .visit_path_mut(&mut path);
                 supertraits = Punctuated::new();
                 supertraits.push(TypeParamBound::Trait(TraitBound {
                     paren_token: None,
                     modifier: TraitBoundModifier::None,
                     lifetimes: None,
-                    path: path.clone(),
+                    path,
                 }));
             }
         }
@@ -1145,17 +1273,36 @@ impl ToTokens for OutputItemTraitDef<'_> {
 
         let mut macro_variant_params = TokenStream::new();
         let mut macro_variant_args = TokenStream::new();
+        let mut full_macro_variant_args = TokenStream::new();
         let mut macro_variant_default_args = TokenStream::new();
         let mut macro_body = TokenStream::new();
+        let mut full_macro_body = TokenStream::new();
         let impl_body_macro_ident = Self::impl_body_macro_ident(trait_ident);
         let mut impl_body_macro_contents = TokenStream::new();
+        let part_param_ident = Ident::new("_Part", Span::call_site());
+        let part_param = quote!($#part_param_ident);
+        let mut macro_args = macro_args_base;
         if let Some(variants) = &self.variants {
             for (variant_idx, output_variant) in variants.iter().enumerate() {
+                let mut full_variant_impl_body = TokenStream::new();
+                for part in &output_variant.impl_items.0 {
+                    let mut impl_items = TokenStream::new();
+                    for impl_item in &part.items {
+                        impl_item.to_tokens(&mut impl_items);
+                    }
+                    let impl_body_macro_body = generalize(impl_items);
+                    if let Some(part_ident) = &part.ident {
+                        impl_body_macro_contents.extend(quote!(
+                            ([#part_ident $(, $($_OtherPart:tt)*)?], #variant_idx, #macro_params_base) => {
+                                #impl_body_macro_body
+                                $(#ref_path_param::)*#impl_body_macro_ident!([$($($_OtherPart)*)?], #variant_idx, #macro_default_args_base);
+                            };
+                        ));
+                    }
+                    full_variant_impl_body.extend(impl_body_macro_body);
+                }
+
                 let variant = &output_variant.variant.variant;
-                let mut variant_generics = variant.generics.clone();
-                self.trait_def
-                    .generics
-                    .erase_in_generics(&mut variant_generics);
                 let mut macro_generic_params = Vec::new();
                 let mut macro_generic_args = Vec::new();
                 let mut macro_generic_default_args = Vec::new();
@@ -1168,7 +1315,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     .collect();
                 let mut impl_generic_args = Vec::new();
                 let param_prefix = format!("Var_{variant_idx}_");
-                for param in &variant_generics.params {
+                for param in &variant.generics.params {
                     match param {
                         GenericParam::Lifetime(LifetimeParam {
                             attrs: _,
@@ -1176,12 +1323,15 @@ impl ToTokens for OutputItemTraitDef<'_> {
                             colon_token,
                             bounds,
                         }) => {
-                            let ident = ident_with_prefix(&lifetime.ident, &param_prefix);
-                            macro_generic_params.push(quote!($#ident:lifetime));
-                            macro_generic_args.push(quote!($#ident));
+                            let macro_param_ident =
+                                ident_with_prefix(&lifetime.ident, &param_prefix, true);
+                            let macro_param = quote!($#macro_param_ident);
+                            macro_generic_params.push(quote!(#macro_param:lifetime));
+                            macro_generic_args.push(quote!(#macro_param));
                             macro_generic_default_args.push(lifetime.to_token_stream());
-                            impl_generic_params.push(quote!($#ident #colon_token #bounds));
-                            impl_generic_args.push(quote!($#ident));
+                            impl_generic_params.push(quote!(#macro_param #colon_token #bounds));
+                            impl_generic_args.push(quote!(#macro_param));
+                            macro_args.insert(macro_param_ident, MacroArg::single(&lifetime));
                         }
                         GenericParam::Type(TypeParam {
                             attrs: _,
@@ -1191,15 +1341,17 @@ impl ToTokens for OutputItemTraitDef<'_> {
                             eq_token,
                             default,
                         }) => {
-                            let ident = ident_with_prefix(ident, &param_prefix);
-                            macro_generic_params.push(quote!($#ident:ident));
-                            macro_generic_args.push(quote!($#ident));
+                            let macro_param_ident = ident_with_prefix(ident, &param_prefix, true);
+                            let macro_param = quote!($#macro_param_ident);
+                            macro_generic_params.push(quote!(#macro_param:ident));
+                            macro_generic_args.push(quote!(#macro_param));
                             macro_generic_default_args.push(ident.to_token_stream());
                             let generalized_bounds = generalize(bounds.to_token_stream());
                             impl_generic_params.push(
-                                quote!($#ident #colon_token #generalized_bounds #eq_token #default),
+                                quote!(#macro_param #colon_token #generalized_bounds #eq_token #default),
                             );
-                            impl_generic_args.push(quote!($#ident));
+                            impl_generic_args.push(quote!(#macro_param));
+                            macro_args.insert(macro_param_ident, MacroArg::ident(ident.clone()));
                         }
                         GenericParam::Const(ConstParam {
                             attrs: _,
@@ -1210,14 +1362,16 @@ impl ToTokens for OutputItemTraitDef<'_> {
                             eq_token,
                             default,
                         }) => {
-                            let ident = ident_with_prefix(ident, &param_prefix);
-                            macro_generic_params.push(quote!($#ident:ident));
-                            macro_generic_args.push(quote!($#ident));
+                            let macro_param_ident = ident_with_prefix(ident, &param_prefix, true);
+                            let macro_param = quote!($#macro_param_ident);
+                            macro_generic_params.push(quote!(#macro_param:ident));
+                            macro_generic_args.push(quote!(#macro_param));
                             macro_generic_default_args.push(ident.to_token_stream());
                             impl_generic_params.push(
-                                quote!(#const_token $#ident #colon_token #ty #eq_token #default),
+                                quote!(#const_token #macro_param #colon_token #ty #eq_token #default),
                             );
-                            impl_generic_args.push(quote!($#ident));
+                            impl_generic_args.push(quote!(#macro_param));
+                            macro_args.insert(macro_param_ident, MacroArg::ident(ident.clone()));
                         }
                     }
                 }
@@ -1243,17 +1397,22 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         .gt_token
                         .to_tokens(&mut macro_default_arg_generics);
                 }
-                let body_ident = Ident::new(&format!("{param_prefix}_Body"), Span::call_site());
-                let body = quote! {
-                    $($_ref_path::)*#impl_body_macro_ident!([$($_Part)*], #variant_idx, #macro_default_args_base);
-                    $($#body_ident)*
+                let body_param_ident =
+                    Ident::new(&format!("{param_prefix}_Body"), Span::call_site());
+                let body_param = quote!($#body_param_ident);
+                let variant_impl_body = quote! {
+                    $(#ref_path_param::)*#impl_body_macro_ident!([$(#part_param)*], #variant_idx, #macro_default_args_base);
+                    $(#body_param)*
                 };
                 let variant_ident = &variant.ident;
                 macro_variant_params.extend(quote!(#variant_ident #macro_generics => {
-                    $($#body_ident:tt)*
+                    $(#body_param:tt)*
                 }));
                 macro_variant_args.extend(quote!(#variant_ident #macro_arg_generics => {
-                    #body
+                    #variant_impl_body
+                }));
+                full_macro_variant_args.extend(quote!(#variant_ident #macro_arg_generics => {
+                    #full_variant_impl_body
                 }));
                 macro_variant_default_args
                     .extend(quote!(#variant_ident #macro_default_arg_generics => {}));
@@ -1279,29 +1438,19 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     variant.generics.gt_token.to_tokens(&mut impl_args);
                 }
                 if independent_impls {
-                    macro_body.extend(
-                        quote! {
-                            impl #impl_generics $_Name #trait_generic_args for $($_ref_path::)*#variant_ident #impl_args {
-                                #body
-                            }
-                        },
+                    let impl_signature = quote!(
+                        impl #impl_generics #name_param #trait_generic_args for $(#ref_path_param::)*#variant_ident #impl_args
                     );
-                }
-
-                for part in &output_variant.impl_items.0 {
-                    let part_ident = &part.ident;
-                    let mut impl_body_macro_body = TokenStream::new();
-                    let mut impl_items = TokenStream::new();
-                    for impl_item in &part.items {
-                        impl_item.to_tokens(&mut impl_items);
-                    }
-                    impl_body_macro_body.extend(generalize(impl_items));
-                    impl_body_macro_contents.extend(
-                        quote!(([#part_ident $(, $($_OtherPart:tt)*)?], #variant_idx, #macro_params_base) => {
-                            #impl_body_macro_body
-                            $($_ref_path::)*#impl_body_macro_ident!([$($($_OtherPart)*)?], #variant_idx, #macro_default_args_base);
-                        };)
-                    );
+                    macro_body.extend(quote! {
+                        #impl_signature {
+                            #variant_impl_body
+                        }
+                    });
+                    full_macro_body.extend(quote! {
+                        #impl_signature {
+                            #full_variant_impl_body
+                        }
+                    });
                 }
             }
         }
@@ -1315,24 +1464,29 @@ impl ToTokens for OutputItemTraitDef<'_> {
         });
         if !independent_impls {
             if let TraitContents::Alias { path } = &self.trait_def.contents {
-                let mut path = path.clone();
+                let mut path = path.extract_path();
                 if let Some(segment) = path.segments.last_mut() {
                     segment.ident = Self::impl_macro_ident(&segment.ident);
                     segment.arguments = PathArguments::None;
                 }
                 let mut ref_path = TokenStream::new();
                 Self::output_ref_path(&path, &mut ref_path);
-                macro_body.extend(quote!(#path!([Self], $_Name, #ref_path, #macro_default_type_bound_args #macro_variant_args);));
+                macro_body.extend(quote!(
+                    #path!([Self], #name_param, #ref_path, #macro_parent_type_bound_args #macro_variant_args);
+                ));
+                full_macro_body.extend(quote!(
+                    #path!([Self], #name_param, #ref_path, #macro_parent_type_bound_args #full_macro_variant_args);
+                ));
             }
         }
         let impl_macro_ident = Self::impl_macro_ident(trait_ident);
-        let impl_macro_params_base = quote!([$($_Part:tt)*], #macro_params_base);
-        let impl_macro_default_args_base = quote!([$($_Part)*], #macro_default_args_base);
+        let impl_macro_params_base = quote!([$(#part_param:tt)*], #macro_params_base);
+        let impl_macro_default_args_base = quote!([$(#part_param)*], #macro_default_args_base);
         let macro_default_matcher = if macro_variant_params.is_empty() {
             TokenStream::new()
         } else {
             quote!((#impl_macro_params_base) => {
-                $($_ref_path::)*#impl_macro_ident!(#impl_macro_default_args_base #macro_variant_default_args);
+                $(#ref_path_param::)*#impl_macro_ident!(#impl_macro_default_args_base #macro_variant_default_args);
             };)
         };
         tokens.extend(quote! {
@@ -1346,40 +1500,12 @@ impl ToTokens for OutputItemTraitDef<'_> {
             pub use #impl_macro_ident;
         });
 
-        let mut parts = TokenStream::new();
-        parts.append_separated(
-            self.impl_items.0.iter().map(|part| &part.ident),
-            <Token![,]>::default(),
-        );
-        let mut impl_args = quote!([#parts], #trait_ident, , #macro_type_bound_args);
-        if let Some(variants) = &self.variants {
-            for output_variant in variants {
-                let variant = &output_variant.variant.variant;
-                variant.ident.to_tokens(&mut impl_args);
-                let mut generic_params = Vec::new();
-                for param in &variant.generics.params {
-                    match param {
-                        GenericParam::Lifetime(lifetime_param) => {
-                            generic_params.push(lifetime_param.lifetime.to_token_stream());
-                        }
-                        GenericParam::Type(type_param) => {
-                            generic_params.push(type_param.ident.to_token_stream());
-                        }
-                        GenericParam::Const(const_param) => {
-                            generic_params.push(const_param.ident.to_token_stream());
-                        }
-                    }
-                }
-                if !generic_params.is_empty() {
-                    variant.generics.lt_token.to_tokens(&mut impl_args);
-                    impl_args.append_separated(generic_params, <Token![,]>::default());
-                    variant.generics.gt_token.to_tokens(&mut impl_args);
-                }
-                impl_args.extend(quote!(=> {}));
-            }
-        }
-
-        tokens.extend(quote!(#impl_macro_ident!(#impl_args);));
+        // Here, we would like to invoke the macro which we have just constructed (similarly to
+        // the invocation we output when defining a trait alias). Unfortunately, Rust Analyzer
+        // currently doesn't seem to expand such invocations transparently enough, so that IDE
+        // navigation fails. Therefore, we expand the macro ourselves, essentially duplicating
+        // its contents in our output.
+        tokens.extend(expand_macro_body(full_macro_body, &macro_args));
     }
 }
 
@@ -1414,13 +1540,19 @@ pub struct ImplPartList<T>(Vec<ImplPart<T>>);
 
 impl<T> ImplPartList<T> {
     pub fn new() -> Self {
-        ImplPartList(vec![ImplPart {
-            ident: self_type_ident(None),
-            items: Vec::new(),
-        }])
+        ImplPartList(vec![
+            ImplPart {
+                ident: None,
+                items: Vec::new(),
+            },
+            ImplPart {
+                ident: Some(self_type_ident(None)),
+                items: Vec::new(),
+            },
+        ])
     }
 
-    fn add_item(&mut self, part_ident: &Ident, item: T) {
+    fn add_item(&mut self, part_ident: &Option<Ident>, item: T) {
         let part = if let Some(part) = self.0.iter_mut().find(|part| &part.ident == part_ident) {
             part
         } else {
@@ -1435,6 +1567,6 @@ impl<T> ImplPartList<T> {
 }
 
 struct ImplPart<T> {
-    ident: Ident,
+    ident: Option<Ident>,
     items: Vec<T>,
 }

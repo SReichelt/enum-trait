@@ -28,34 +28,47 @@ impl MetaItemList {
         for item in &self.0 {
             if let MetaItem::TraitDef(trait_def) = item {
                 let extracted_generics = trait_def.generics.extract_generics();
-                let variants = if let TraitContents::Enum { variants } = &trait_def.contents {
-                    let mut trait_generics = extracted_generics.clone();
-                    add_underscores_to_all_params(&mut trait_generics)?;
-                    Some(
-                        variants
-                            .iter()
-                            .map(|variant| {
-                                let mut variant = variant.clone();
-                                add_underscores_to_all_params(&mut variant.generics)?;
-                                Ok(OutputImplVariant {
-                                    variant: ImplVariant {
-                                        impl_generics: trait_generics.clone(),
-                                        trait_args: generic_args(&trait_generics),
-                                        variant,
-                                    },
-                                    impl_items: ImplPartList::new(),
+                let mut trait_variants = None;
+                let mut dependent_idents = Vec::new();
+                match &trait_def.contents {
+                    TraitContents::Enum { variants } => {
+                        let mut trait_generics = extracted_generics.clone();
+                        add_underscores_to_all_params(&mut trait_generics)?;
+                        trait_variants = Some(
+                            variants
+                                .iter()
+                                .map(|variant| {
+                                    let mut variant = variant.clone();
+                                    add_underscores_to_all_params(&mut variant.generics)?;
+                                    Ok(OutputImplVariant {
+                                        variant: ImplVariant {
+                                            impl_generics: trait_generics.clone(),
+                                            trait_args: generic_args(&trait_generics),
+                                            variant,
+                                        },
+                                        impl_items: ImplPartList::new(),
+                                    })
                                 })
-                            })
-                            .collect::<Result<_>>()?,
-                    )
-                } else {
-                    None
-                };
+                                .collect::<Result<_>>()?,
+                        )
+                    }
+                    TraitContents::Alias { path } => {
+                        for arg in &path.arguments.args {
+                            if let MetaGenericArgument::TraitAlias(alias_arg) = arg {
+                                trait_def.add_path_to_dependencies(
+                                    &alias_arg.value,
+                                    &mut dependent_idents,
+                                );
+                            }
+                        }
+                    }
+                }
                 result.0.push(OutputMetaItem::TraitDef(OutputItemTraitDef {
                     trait_def,
                     extracted_generics,
-                    variants,
+                    variants: trait_variants,
                     impl_items: ImplPartList::new(),
+                    dependent_idents,
                     next_internal_item_idx: 0,
                 }));
             }
@@ -79,30 +92,33 @@ impl MetaItemList {
                     Self::check_trait_impl_args(&impl_item.generics, &segment.arguments)?;
                     let impl_context = trait_def_item.impl_context();
                     let variants_known = trait_def_item.variants.is_some();
-                    let self_type_ident = self_type_ident(None);
                     for item in &impl_item.items {
-                        let (trait_item, variants) = result.create_trait_item(
-                            &self_type_ident,
+                        let mut part_ident = None;
+                        let trait_item_desc = result.create_trait_item(
+                            &mut part_ident,
                             item.clone(),
                             &impl_context,
                             trait_def,
                             variants_known,
                         )?;
                         let trait_def_item = result.trait_def_item(&segment.ident)?;
-                        trait_def_item.add_item(&self_type_ident, trait_item, variants)?;
+                        trait_def_item.add_item(&part_ident, trait_item_desc)?;
                     }
                 }
 
                 MetaItem::Type(type_item) => {
+                    let extracted_generics = type_item.generics.extract_generics();
                     let context =
-                        GenericsContext::WithGenerics(&type_item.generics, &GenericsContext::Empty);
-                    let ty = result.convert_type_level_expr_type(
+                        GenericsContext::WithGenerics(&extracted_generics, &GenericsContext::Empty);
+                    let mut ty = result.convert_type_level_expr_type(
                         &type_item.attrs,
-                        &type_item.ident,
+                        &Some(type_item.ident.clone()),
                         type_item.ty.clone(),
                         &context,
                         &type_item.bounds,
                     )?;
+                    RemoveTypeBoundParamsFromPathArguments(&type_item.generics)
+                        .visit_type_mut(&mut ty);
                     let mut attrs = OutputMetaItemList::code_item_attrs(type_item.attrs.clone());
                     // Note: We could strip type bounds instead of silencing the warning, but it
                     // would cause some IDE navigation and syntax highlighting to fail because the
@@ -113,7 +129,7 @@ impl MetaItemList {
                         vis: type_item.vis.clone(),
                         type_token: type_item.type_token.clone(),
                         ident: type_item.ident.clone(),
-                        generics: type_item.generics.clone(),
+                        generics: extracted_generics,
                         eq_token: Default::default(),
                         ty: Box::new(ty),
                         semi_token: Default::default(),
@@ -121,21 +137,22 @@ impl MetaItemList {
                 }
 
                 MetaItem::Fn(fn_item) => {
+                    let extracted_sig = fn_item.sig.extract_signature();
                     let context = GenericsContext::WithGenerics(
-                        &fn_item.sig.generics,
+                        &extracted_sig.generics,
                         &GenericsContext::Empty,
                     );
                     let expr = result.convert_type_level_expr_fn(
                         &fn_item.attrs,
-                        &fn_item.sig.ident,
+                        &Some(fn_item.sig.ident.clone()),
                         fn_item.expr.clone(),
                         &context,
-                        &fn_item.sig,
+                        &extracted_sig,
                     )?;
                     result.0.push(OutputMetaItem::Item(Item::Fn(ItemFn {
                         attrs: OutputMetaItemList::code_item_attrs(fn_item.attrs.clone()),
                         vis: fn_item.vis.clone(),
-                        sig: fn_item.sig.clone(),
+                        sig: extracted_sig,
                         block: Box::new(Block {
                             brace_token: Default::default(),
                             stmts: vec![Stmt::Expr(expr, None)],
@@ -161,9 +178,9 @@ impl MetaItemList {
                         ));
                     }
                     if let TraitContents::Alias { path } = &trait_def.contents {
-                        if has_complex_type_arg(path) {
+                        if path.arguments.has_complex_type_arg() {
                             return Err(Error::new(
-                                path.span(),
+                                path.arguments.span(),
                                 "at least one `match` expression corresponding to alias arguments required",
                             ));
                         }
@@ -267,7 +284,15 @@ impl Parse for MetaItem {
         ahead.parse::<Visibility>()?;
 
         let mut lookahead = ahead.lookahead1();
-        if lookahead.peek(Token![trait]) {
+
+        let mut reuse = false;
+        if lookahead.peek(Token![use]) {
+            reuse = true;
+            ahead.parse::<Token![use]>()?;
+            lookahead = ahead.lookahead1();
+        }
+
+        if !reuse && lookahead.peek(Token![trait]) {
             ahead.parse::<Token![trait]>()?;
             lookahead = ahead.lookahead1();
             if lookahead.peek(Token![impl]) {
@@ -275,7 +300,7 @@ impl Parse for MetaItem {
             } else {
                 return Ok(MetaItem::TraitDef(ItemTraitDef::parse(input, attrs)?));
             }
-        } else if lookahead.peek(Token![enum]) {
+        } else if !reuse && lookahead.peek(Token![enum]) {
             return Ok(MetaItem::TraitDef(ItemTraitDef::parse(input, attrs)?));
         } else if lookahead.peek(Token![type]) {
             return Ok(MetaItem::Type(ItemTypeExt::parse(input, attrs)?));
@@ -318,7 +343,7 @@ impl ItemTraitDef {
             TraitContents::Enum { variants }
         } else {
             input.parse::<Token![=]>()?;
-            let path: Path = input.parse()?;
+            let path: TraitPath = input.parse()?;
             if input.peek(Token![where]) {
                 generics.where_clause = Some(input.parse()?);
             };
@@ -334,6 +359,90 @@ impl ItemTraitDef {
             contents,
         })
     }
+
+    pub fn collect_dependencies_in_generics(
+        &self,
+        generics: &Generics,
+        part_ident: &mut Option<Ident>,
+        dependent_idents: &mut Vec<Ident>,
+    ) {
+        for param in &generics.params {
+            if let GenericParam::Type(type_param) = param {
+                self.collect_dependencies_in_bounds(
+                    &type_param.bounds,
+                    part_ident,
+                    dependent_idents,
+                );
+            }
+        }
+    }
+
+    pub fn collect_dependencies_in_bounds(
+        &self,
+        bounds: &TypeParamBounds,
+        part_ident: &mut Option<Ident>,
+        dependent_idents: &mut Vec<Ident>,
+    ) {
+        for bound in bounds {
+            if let TypeParamBound::Trait(trait_bound) = bound {
+                self.collect_dependencies_in_trait_path(
+                    &trait_bound.path,
+                    part_ident,
+                    dependent_idents,
+                );
+            }
+        }
+    }
+
+    fn collect_dependencies_in_trait_path(
+        &self,
+        path: &Path,
+        part_ident: &mut Option<Ident>,
+        dependent_idents: &mut Vec<Ident>,
+    ) {
+        if path.leading_colon.is_none() && path.segments.len() == 1 {
+            let segment = path.segments.first().unwrap();
+            if segment.ident == self.ident {
+                if part_ident.is_none() {
+                    *part_ident = Some(self_type_ident(None));
+                }
+            } else if !dependent_idents.contains(&segment.ident)
+                && self.are_path_arguments_dependent(&segment.arguments)
+            {
+                dependent_idents.push(segment.ident.clone());
+            }
+        }
+        if part_ident.is_none() && self.generics.contained_in_path(path, true) {
+            *part_ident = Some(self_type_ident(None));
+        }
+    }
+
+    fn are_path_arguments_dependent(&self, arguments: &PathArguments) -> bool {
+        if let PathArguments::AngleBracketed(args) = arguments {
+            for arg in &args.args {
+                if let GenericArgument::Type(Type::Path(TypePath { qself: None, path })) = arg {
+                    if path.is_ident(SELF_TYPE_NAME) || self.generics.contained_in_path(path, true)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn add_path_to_dependencies(&self, path: &Path, dependent_idents: &mut Vec<Ident>) {
+        if path.leading_colon.is_none() && path.segments.len() == 1 {
+            let segment = path.segments.first().unwrap();
+            self.add_ident_to_dependencies(&segment.ident, dependent_idents);
+        }
+    }
+
+    pub fn add_ident_to_dependencies(&self, ident: &Ident, dependent_idents: &mut Vec<Ident>) {
+        if ident != &self.ident && !dependent_idents.contains(ident) {
+            dependent_idents.push(ident.clone());
+        }
+    }
 }
 
 pub enum TraitContents {
@@ -341,7 +450,7 @@ pub enum TraitContents {
         variants: Punctuated<TraitVariant, Token![,]>,
     },
     Alias {
-        path: Path,
+        path: TraitPath,
     },
 }
 
@@ -361,6 +470,52 @@ impl Parse for TraitVariant {
             attrs,
             ident,
             generics,
+        })
+    }
+}
+
+pub struct TraitPath {
+    pub leading_colon: Option<Token![::]>,
+    pub segments: Punctuated<Ident, Token![::]>,
+    pub arguments: MetaGenericArguments,
+}
+
+impl TraitPath {
+    pub fn extract_path(&self) -> Path {
+        let mut segments = Punctuated::new();
+        for segment_pair in self.segments.pairs() {
+            segments.push_value(PathSegment {
+                ident: (*segment_pair.value()).clone(),
+                arguments: PathArguments::None,
+            });
+            if let Some(punct) = segment_pair.punct() {
+                segments.push_punct((*punct).clone());
+            }
+        }
+        if let Some(last) = segments.last_mut() {
+            last.arguments = self.arguments.extract_path_arguments();
+        }
+        Path {
+            leading_colon: self.leading_colon.clone(),
+            segments,
+        }
+    }
+}
+
+impl Parse for TraitPath {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let leading_colon: Option<Token![::]> = input.parse()?;
+        let mut segments = Punctuated::new();
+        segments.push_value(input.parse()?);
+        while let Some(colon) = input.parse::<Option<Token![::]>>()? {
+            segments.push_punct(colon);
+            segments.push_value(input.parse()?);
+        }
+        let arguments: MetaGenericArguments = input.parse()?;
+        Ok(TraitPath {
+            leading_colon,
+            segments,
+            arguments,
         })
     }
 }
@@ -402,7 +557,7 @@ pub struct ItemTypeExt {
     pub vis: Visibility,
     pub type_token: Token![type],
     pub ident: Ident,
-    pub generics: Generics,
+    pub generics: MetaGenerics,
     pub bounds: TypeParamBounds,
     pub ty: TypeLevelExpr<Type>,
 }
@@ -412,7 +567,7 @@ impl ItemTypeExt {
         let vis: Visibility = input.parse()?;
         let type_token: Token![type] = input.parse()?;
         let ident: Ident = input.parse()?;
-        let generics: Generics = input.parse()?;
+        let generics: MetaGenerics = input.parse()?;
         let colon_token: Option<Token![:]> = input.parse()?;
         let bounds = if colon_token.is_some() {
             parse_type_param_bounds(input)?
@@ -437,14 +592,14 @@ impl ItemTypeExt {
 pub struct ItemFnExt {
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
-    pub sig: Signature,
+    pub sig: MetaSignature,
     pub expr: TypeLevelExpr<Expr>,
 }
 
 impl ItemFnExt {
     fn parse(input: ParseStream, attrs: Vec<Attribute>) -> Result<Self> {
         let vis: Visibility = input.parse()?;
-        let sig: Signature = input.parse()?;
+        let sig: MetaSignature = input.parse()?;
         let content: ParseBuffer;
         braced!(content in input);
         let expr: TypeLevelExpr<Expr> = content.parse()?;

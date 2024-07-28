@@ -22,34 +22,49 @@ meta! {
         pub type Get<I: ValidIndex<ItemBound, Self>>: ItemBound = match <Self, I> {
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ValidIndex<ItemBound, Tail>> =>
-                Tail::Get<P>,
+                <Tail as TypeList<ItemBound>>::Get<P>,
         };
 
         pub type GetOpt<I: ExtendedIndex<ItemBound, Self>>: OptionalType<ItemBound> = match <Self, I> {
             Empty, Zero => NoType,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => SomeType<Head>,
             NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
-                Tail::GetOpt<P>,
-        };
-
-        /// Equivalent to `GetOpt` followed by `UnwrapOr`, but avoids the type-erasure problem of
-        /// `GetOpt`.
-        pub type GetOr<I: ExtendedIndex<ItemBound, Self>, X: ItemBound>: ItemBound = match <Self, I> {
-            Empty, Zero => X,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => Head,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
-                Tail::GetOr<P, X>,
+                <Tail as TypeList<ItemBound>>::GetOpt<P>,
         };
 
         pub type Append<T: ItemBound>: TypeList<ItemBound> = match <Self> {
             Empty => NonEmpty<T, Empty>,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<Head, Tail::Append<T>>,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> =>
+                NonEmpty<Head, <Tail as TypeList<ItemBound>>::Append<T>>,
         };
 
         pub type AppendAll<List: TypeList<ItemBound>>: TypeList<ItemBound> = match <Self> {
             Empty => List,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<Head, Tail::AppendAll<List>>,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> =>
+                NonEmpty<Head, <Tail as TypeList<ItemBound>>::AppendAll<List>>,
         };
+
+        pub type Reverse: TypeList<ItemBound> = match <Self> {
+            Empty => Empty,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> =>
+                <<Tail as TypeList<ItemBound>>::Reverse as TypeList<ItemBound>>::Append<Head>,
+        };
+
+        // TODO: These require a lifetime parameter `'a` at `TypeList`, with `ItemBound: 'a` and
+        //       'a: 'b`.
+        /*
+        pub type MapToRefs<'b>: SizedTypeList = match <Self> {
+            Empty => Empty,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> =>
+                NonEmpty<&'b Head, <Tail as TypeList<ItemBound>>::MapToRefs<'b>>,
+        };
+
+        pub type MapToMutRefs<'b>: SizedTypeList = match <Self> {
+            Empty => Empty,
+            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> =>
+                NonEmpty<&'b mut Head, <Tail as TypeList<ItemBound>>::MapToMutRefs<'b>>,
+        };
+        */
     }
 
     pub trait ValidIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
@@ -58,45 +73,73 @@ meta! {
     pub trait ExtendedIndex<trait ItemBound: ?Sized, List: TypeList<ItemBound>> =
         MetaNumLessOrEqual<List::Len>;
 
-    /*
-    pub trait SizedTypeList<trait ItemBound: Sized> = TypeList<ItemBound>;
+    pub trait SizedTypeList<trait ItemBound: Sized> = TypeList<
+        ItemBound,
+        trait ValidIndex = SizedValidIndex,
+        trait ExtendedIndex = SizedExtendedIndex,
+        trait OptionalType = SizedOptionalType,
+    >;
+
+    pub trait SizedValidIndex<
+        trait ItemBound: Sized,
+        List: SizedTypeList<ItemBound>,
+    > = ValidIndex<
+        ItemBound,
+        List,
+        trait TypeList = SizedTypeList,
+    >;
+
+    pub trait SizedExtendedIndex<
+        trait ItemBound: Sized,
+        List: SizedTypeList<ItemBound>,
+    > = ExtendedIndex<
+        ItemBound,
+        List,
+        trait TypeList = SizedTypeList,
+        trait OptionalType = SizedOptionalType,
+    >;
 
     pub type NestedTupleWith<trait ItemBound: Sized, List: SizedTypeList<ItemBound>, T: Sized>: Sized =
         match <List> {
             Empty => T,
             NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>> =>
-                (Head, NestedTupleWith<ItemBound, List, T>),
+                (Head, NestedTupleWith<ItemBound, Tail, T>),
         };
 
     pub type NestedTuple<trait ItemBound: Sized, List: SizedTypeList<ItemBound>>: Sized =
         NestedTupleWith<ItemBound, List, ()>;
 
-    pub fn get_nested_tuple_item<
+    pub fn nested_tuple_item<
         trait ItemBound: Sized,
         List: SizedTypeList<ItemBound>,
         T: Sized,
-        I: ExtendedIndex<ItemBound, List>
+        I: SizedExtendedIndex<ItemBound, List>
     >(
         tuple: &NestedTupleWith<ItemBound, List, T>,
-    ) -> &<List::GetOr<I, T> {
+    ) -> &<<List as SizedTypeList<ItemBound>>::GetOpt<I> as SizedOptionalType<ItemBound>>::UnwrapOr<T> {
         match <List, I> {
             Empty, Zero => tuple,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Zero => &tuple.0,
-            NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>>, Succ<P: ExtendedIndex<ItemBound, Tail>> =>
-                get_nested_tuple_item<ItemBound, Tail, T, P>(&tuple.1),
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>>, Zero => &tuple.0,
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>>, Succ<P: SizedExtendedIndex<ItemBound, Tail>> =>
+                nested_tuple_item::<ItemBound, Tail, T, P>(&tuple.1),
         }
     }
-    */
 
-    /*pub type MapToRefs<'a, trait ItemBound: ?Sized + 'a, List: TypeList<ItemBound>>: SizedTypeList = match <List> {
-        Empty => Empty,
-        NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a Head, MapToRefs<'a, ItemBound, Tail>>,
-    };
-
-    pub type MapToMutRefs<'a, trait ItemBound: ?Sized + 'a, List: TypeList<ItemBound>>: SizedTypeList = match <List> {
-        Empty => Empty,
-        NonEmpty<Head: ItemBound, Tail: TypeList<ItemBound>> => NonEmpty<&'a mut Head, MapToMutRefs<'a, ItemBound, Tail>>,
-    };*/
+    pub fn nested_tuple_item_mut<
+        trait ItemBound: Sized,
+        List: SizedTypeList<ItemBound>,
+        T: Sized,
+        I: SizedExtendedIndex<ItemBound, List>
+    >(
+        tuple: &mut NestedTupleWith<ItemBound, List, T>,
+    ) -> &mut <<List as SizedTypeList<ItemBound>>::GetOpt<I> as SizedOptionalType<ItemBound>>::UnwrapOr<T> {
+        match <List, I> {
+            Empty, Zero => tuple,
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>>, Zero => &mut tuple.0,
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>>, Succ<P: SizedExtendedIndex<ItemBound, Tail>> =>
+                nested_tuple_item_mut::<ItemBound, Tail, T, P>(&mut tuple.1),
+        }
+    }
 }
 
 #[macro_export]
@@ -126,6 +169,7 @@ mod tests {
     type EmptyTypeList = type_list![];
     type TwoItemTypeList = type_list![&'static str, u8];
     type ThreeItemTypeList = type_list![bool; 3];
+    type FiveItemTypeList = <TwoItemTypeList as TypeList>::AppendAll<ThreeItemTypeList>;
 
     #[const_test]
     const fn properties() {
@@ -136,6 +180,8 @@ mod tests {
         assert!(<TwoItemTypeList as TypeList>::Len::VALUE == 2);
         assert!(!<ThreeItemTypeList as TypeList>::IsEmpty::VALUE);
         assert!(<ThreeItemTypeList as TypeList>::Len::VALUE == 3);
+        assert!(!<FiveItemTypeList as TypeList>::IsEmpty::VALUE);
+        assert!(<FiveItemTypeList as TypeList>::Len::VALUE == 5);
     }
 
     #[const_test]
@@ -143,8 +189,46 @@ mod tests {
         let _: <TwoItemTypeList as TypeList>::Get<meta_num!(0)> = "test";
         let _: <TwoItemTypeList as TypeList>::Get<meta_num!(1)> = 42;
 
-        let _: <TwoItemTypeList as TypeList>::GetOr<meta_num!(0), bool> = "test";
-        let _: <TwoItemTypeList as TypeList>::GetOr<meta_num!(1), bool> = 42;
-        let _: <TwoItemTypeList as TypeList>::GetOr<meta_num!(2), bool> = true;
+        let _: <<TwoItemTypeList as TypeList>::GetOpt<meta_num!(0)> as OptionalType>::UnwrapOr<()> =
+            "test";
+        let _: <<TwoItemTypeList as TypeList>::GetOpt<meta_num!(1)> as OptionalType>::UnwrapOr<()> =
+            42;
+        let _: <<TwoItemTypeList as TypeList>::GetOpt<meta_num!(2)> as OptionalType>::UnwrapOr<()> =
+            ();
+
+        let _: <<TwoItemTypeList as TypeList>::Reverse as TypeList>::Get<meta_num!(0)> = 42;
+        let _: <<TwoItemTypeList as TypeList>::Reverse as TypeList>::Get<meta_num!(1)> = "test";
+    }
+
+    #[test]
+    fn nested_tuples() {
+        assert_eq!(
+            nested_tuple_item::<type_list![], (), meta_num!(0)>(&()),
+            &()
+        );
+        assert_eq!(
+            nested_tuple_item::<type_list![], i32, meta_num!(0)>(&42),
+            &42
+        );
+        assert_eq!(
+            nested_tuple_item::<type_list![i32], (), meta_num!(0)>(&(42, ())),
+            &42
+        );
+        assert_eq!(
+            nested_tuple_item::<type_list![i32], (), meta_num!(1)>(&(42, ())),
+            &()
+        );
+        assert_eq!(
+            nested_tuple_item::<type_list![i32, &str], bool, meta_num!(0)>(&(42, ("test", true))),
+            &42
+        );
+        assert_eq!(
+            nested_tuple_item::<type_list![i32, &str], bool, meta_num!(1)>(&(42, ("test", true))),
+            &"test"
+        );
+        assert_eq!(
+            nested_tuple_item::<type_list![i32, &str], bool, meta_num!(2)>(&(42, ("test", true))),
+            &true
+        );
     }
 }

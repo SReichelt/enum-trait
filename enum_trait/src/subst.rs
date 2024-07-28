@@ -669,7 +669,7 @@ pub fn add_underscores_to_all_params(generics: &mut Generics) -> Result<bool> {
 }
 
 fn add_underscore_suffix(ident: &mut Ident) {
-    *ident = ident_with_suffix(ident, "_")
+    *ident = ident_with_suffix(ident, "_", true)
 }
 
 fn add_underscores_if_conflicting(

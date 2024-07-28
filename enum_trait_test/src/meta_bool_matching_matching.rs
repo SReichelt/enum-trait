@@ -1,6 +1,6 @@
 use enum_trait::meta;
 
-use enum_trait_core::{meta_bool::*, meta_num::*};
+use enum_trait_core::meta_bool::*;
 
 use crate::meta_bool_matching::*;
 

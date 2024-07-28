@@ -24,6 +24,8 @@ meta! {
             SomeType<T: Bound> => T,
         };
     }
+
+    pub trait SizedOptionalType<trait Bound: Sized> = OptionalType<Bound>;
 }
 
 #[cfg(test)]
