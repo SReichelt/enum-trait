@@ -113,10 +113,10 @@ meta! {
         trait ItemBound: Sized,
         List: SizedTypeList<ItemBound>,
         T: Sized,
-        I: SizedExtendedIndex<ItemBound, List>
+        I: SizedExtendedIndex<ItemBound, List>,
     >(
         tuple: &NestedTupleWith<ItemBound, List, T>,
-    ) -> &<<List as SizedTypeList<ItemBound>>::GetOpt<I> as SizedOptionalType<ItemBound>>::UnwrapOr<T> {
+    ) -> &<<List as SizedTypeList<ItemBound>>::GetOpt<I> as SizedOptionalType>::UnwrapOr<T> {
         match <List, I> {
             Empty, Zero => tuple,
             NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>>, Zero => &tuple.0,
@@ -129,10 +129,10 @@ meta! {
         trait ItemBound: Sized,
         List: SizedTypeList<ItemBound>,
         T: Sized,
-        I: SizedExtendedIndex<ItemBound, List>
+        I: SizedExtendedIndex<ItemBound, List>,
     >(
         tuple: &mut NestedTupleWith<ItemBound, List, T>,
-    ) -> &mut <<List as SizedTypeList<ItemBound>>::GetOpt<I> as SizedOptionalType<ItemBound>>::UnwrapOr<T> {
+    ) -> &mut <<List as SizedTypeList<ItemBound>>::GetOpt<I> as SizedOptionalType>::UnwrapOr<T> {
         match <List, I> {
             Empty, Zero => tuple,
             NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>>, Zero => &mut tuple.0,
@@ -140,6 +140,37 @@ meta! {
                 nested_tuple_item_mut::<ItemBound, Tail, T, P>(&mut tuple.1),
         }
     }
+
+    // TODO: See comment at `MapToRefs`.
+    /*
+    pub fn nested_tuple_ref_to_ref_tuple<
+        trait ItemBound: Sized,
+        List: SizedTypeList<ItemBound>,
+        T: Sized,
+    >(
+        tuple: &NestedTupleWith<ItemBound, List, T>,
+    ) -> NestedTupleWith<<List as TypeList<ItemBound>>::MapToRefs<'_>, &T> {
+        match <List> {
+            Empty => tuple,
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>> =>
+                (&tuple.0, nested_tuple_ref_to_ref_tuple::<ItemBound, Tail, T>(&tuple.1)),
+        }
+    }
+
+    pub fn nested_tuple_ref_to_ref_tuple_mut<
+        trait ItemBound: Sized,
+        List: SizedTypeList<ItemBound>,
+        T: Sized,
+    >(
+        tuple: &mut NestedTupleWith<ItemBound, List, T>,
+    ) -> NestedTupleWith<<List as TypeList<ItemBound>>::MapToMutRefs<'_>, &mut T> {
+        match <List> {
+            Empty => tuple,
+            NonEmpty<Head: ItemBound, Tail: SizedTypeList<ItemBound>> =>
+                (&mut tuple.0, nested_tuple_ref_to_ref_tuple_mut::<ItemBound, Tail, T>(&mut tuple.1)),
+        }
+    }
+    */
 }
 
 #[macro_export]

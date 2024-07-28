@@ -36,7 +36,8 @@ meta! {
         }
     }
 
-    // TODO: Use sized type list and nested tuple instead.
+    // TODO: Use `nested_tuple_ref_to_ref_tuple` and `nested_tuple_ref_to_ref_tuple_mut` instead of
+    //       pairs, once available.
     pub fn pair_ref_to_ref_pair<'a, K: RefKind, T1, T2>(
         pair: K::Ref<'a, (T1, T2)>,
     ) -> (K::Ref<'a, T1>, K::Ref<'a, T2>) {
