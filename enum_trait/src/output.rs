@@ -211,7 +211,7 @@ impl<'a> OutputMetaItemList<'a> {
                     .visit_trait_item_fn_mut(&mut trait_item);
                 let item_context =
                     GenericsContext::WithGenerics(&trait_item.sig.generics, &context);
-                let mut expr = Some(fn_item.expr);
+                let mut expr = Some(fn_item.block);
                 let mut dependent_idents = Vec::new();
                 let variants = Self::try_implement_variants(
                     &mut expr,
@@ -219,7 +219,14 @@ impl<'a> OutputMetaItemList<'a> {
                     trait_def,
                     &mut dependent_idents,
                     |body, body_context, substitutions| {
-                        let mut expr = self.convert_type_level_expr_fn(
+                        let body = match body {
+                            TypeLevelExpr::Expr(body_expr) => TypeLevelExpr::Expr(Block {
+                                brace_token: Default::default(),
+                                stmts: vec![Stmt::Expr(body_expr, None)],
+                            }),
+                            TypeLevelExpr::Match(body_match) => TypeLevelExpr::Match(body_match),
+                        };
+                        let mut block = self.convert_type_level_expr_fn(
                             &fn_item.attrs,
                             part_ident,
                             body,
@@ -227,7 +234,7 @@ impl<'a> OutputMetaItemList<'a> {
                             &fn_item.sig,
                         )?;
                         RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
-                            .visit_expr_mut(&mut expr);
+                            .visit_block_mut(&mut block);
                         let mut sig = trait_item.sig.clone();
                         for (subst_param, subst_arg) in substitutions {
                             sig.substitute(subst_param, ParamSubstArg::Arg(subst_arg))?;
@@ -237,15 +244,12 @@ impl<'a> OutputMetaItemList<'a> {
                             vis: Visibility::Inherited,
                             defaultness: None,
                             sig,
-                            block: Block {
-                                brace_token: Default::default(),
-                                stmts: vec![Stmt::Expr(expr, None)],
-                            },
+                            block,
                         }))
                     },
                 )?;
                 if variants.is_none() {
-                    let mut expr = self.convert_type_level_expr_fn(
+                    let mut block = self.convert_type_level_expr_fn(
                         &fn_item.attrs,
                         part_ident,
                         expr.unwrap(),
@@ -253,11 +257,8 @@ impl<'a> OutputMetaItemList<'a> {
                         &fn_item.sig,
                     )?;
                     RemoveTypeBoundParamsFromPathArguments(&trait_def.generics)
-                        .visit_expr_mut(&mut expr);
-                    trait_item.default = Some(Block {
-                        brace_token: Default::default(),
-                        stmts: vec![Stmt::Expr(expr, None)],
-                    });
+                        .visit_block_mut(&mut block);
+                    trait_item.default = Some(block);
                     trait_item.semi_token = None;
                 }
                 trait_def.collect_dependencies_in_generics(
@@ -274,8 +275,8 @@ impl<'a> OutputMetaItemList<'a> {
         }
     }
 
-    fn get_self_match<E>(
-        expr: &mut Option<TypeLevelExpr<E>>,
+    fn get_self_match<E, Ex>(
+        expr: &mut Option<TypeLevelExpr<E, Ex>>,
     ) -> Option<TypeLevelExprMatch<TypeLevelExpr<E>>> {
         let Some(TypeLevelExpr::Match(match_expr)) = expr else {
             return None;
@@ -289,8 +290,8 @@ impl<'a> OutputMetaItemList<'a> {
         Some(match_expr)
     }
 
-    fn try_implement_variants<E: Substitutable + ToTokens>(
-        expr: &mut Option<TypeLevelExpr<E>>,
+    fn try_implement_variants<E: Substitutable + ToTokens, Ex: Substitutable>(
+        expr: &mut Option<TypeLevelExpr<E, Ex>>,
         context: &GenericsContext,
         trait_def: &ItemTraitDef,
         dependent_idents: &mut Vec<Ident>,
@@ -521,10 +522,10 @@ impl<'a> OutputMetaItemList<'a> {
         &mut self,
         attrs: &Vec<Attribute>,
         part_ident: &Option<Ident>,
-        expr: TypeLevelExpr<Expr>,
+        expr: TypeLevelExpr<Expr, Block>,
         context: &GenericsContext,
         sig: &Signature,
-    ) -> Result<Expr> {
+    ) -> Result<Block> {
         self.convert_type_level_expr(
             part_ident,
             expr,
@@ -539,7 +540,7 @@ impl<'a> OutputMetaItemList<'a> {
                         generics,
                         ..sig
                     },
-                    expr,
+                    block: expr,
                 }))
             },
             |qself, mut path| {
@@ -565,34 +566,40 @@ impl<'a> OutputMetaItemList<'a> {
                         path: ident.ident.clone().into(),
                     }));
                 }
-                Ok(Expr::Call(ExprCall {
-                    attrs: Vec::new(),
-                    func: Box::new(Expr::Path(ExprPath {
-                        attrs: Vec::new(),
-                        qself,
-                        path,
-                    })),
-                    paren_token: Default::default(),
-                    args,
-                }))
+                Ok(Block {
+                    brace_token: Default::default(),
+                    stmts: vec![Stmt::Expr(
+                        Expr::Call(ExprCall {
+                            attrs: Vec::new(),
+                            func: Box::new(Expr::Path(ExprPath {
+                                attrs: Vec::new(),
+                                qself,
+                                path,
+                            })),
+                            paren_token: Default::default(),
+                            args,
+                        }),
+                        None,
+                    )],
+                })
             },
         )
     }
 
-    pub fn convert_type_level_expr<E: Substitutable, X: Substitutable>(
+    pub fn convert_type_level_expr<E: Substitutable, Ex, X: Substitutable>(
         &mut self,
         part_ident: &Option<Ident>,
-        expr: TypeLevelExpr<E>,
+        expr: TypeLevelExpr<E, Ex>,
         extra: X,
         context: &GenericsContext,
         create_trait_impl_item: impl FnOnce(
             Ident,
             Generics,
-            TypeLevelExpr<E>,
+            TypeLevelExpr<E, Ex>,
             X,
         ) -> Result<TraitImplItem>,
-        create_path_expr: impl FnOnce(Option<QSelf>, Path) -> Result<E>,
-    ) -> Result<E> {
+        create_path_expr: impl FnOnce(Option<QSelf>, Path) -> Result<Ex>,
+    ) -> Result<Ex> {
         match expr {
             TypeLevelExpr::Expr(expr) => Ok(expr),
             TypeLevelExpr::Match(match_expr) => {
@@ -608,7 +615,7 @@ impl<'a> OutputMetaItemList<'a> {
         }
     }
 
-    pub fn convert_type_level_match_expr<E: Substitutable, X: Substitutable>(
+    pub fn convert_type_level_match_expr<E: Substitutable, Ex, X: Substitutable>(
         &mut self,
         part_ident: &Option<Ident>,
         match_expr: TypeLevelExprMatch<TypeLevelExpr<E>>,
@@ -617,7 +624,7 @@ impl<'a> OutputMetaItemList<'a> {
         create_trait_impl_item: impl FnOnce(
             Ident,
             Generics,
-            TypeLevelExpr<E>,
+            TypeLevelExpr<E, Ex>,
             X,
         ) -> Result<TraitImplItem>,
     ) -> Result<(Option<QSelf>, Path)> {
@@ -743,6 +750,9 @@ impl<'a> OutputMetaItemList<'a> {
 
     pub fn code_item_attrs(mut attrs: Vec<Attribute>) -> Vec<Attribute> {
         attrs.push(parse_quote!(#[allow(deprecated)]));
+        // Function parameters are sometimes not used in all trait implementations. (It would be
+        // nice to be more specific here, or to add underscores to unused parameters.)
+        attrs.push(parse_quote!(#[allow(unused_variables)]));
         attrs
     }
 }

@@ -184,7 +184,9 @@ impl<'a, 'b> ParamSubst<'a, 'b> {
                             ParamSubstArg::Param(arg) => {
                                 if let GenericParam::Type(arg) = arg {
                                     first.ident = arg.ident.clone();
-                                    first.ident.set_span(span);
+                                    if first.ident != SELF_TYPE_NAME {
+                                        first.ident.set_span(span);
+                                    }
                                 } else if self.result.is_ok() {
                                     self.result =
                                         Err(Error::new(arg.span(), "non-type arg for type param"));
@@ -403,6 +405,12 @@ impl<E: Substitutable, F: Substitutable> Substitutable for (E, F) {
     fn substitute_impl(&mut self, subst: &mut ParamSubst) {
         self.0.substitute_impl(subst);
         self.1.substitute_impl(subst);
+    }
+}
+
+impl Substitutable for Block {
+    fn substitute_impl(&mut self, subst: &mut ParamSubst) {
+        subst.visit_block_mut(self);
     }
 }
 

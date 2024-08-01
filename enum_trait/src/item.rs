@@ -142,10 +142,10 @@ impl MetaItemList {
                         &extracted_sig.generics,
                         &GenericsContext::Empty,
                     );
-                    let expr = result.convert_type_level_expr_fn(
+                    let block = result.convert_type_level_expr_fn(
                         &fn_item.attrs,
                         &Some(fn_item.sig.ident.clone()),
-                        fn_item.expr.clone(),
+                        fn_item.block.clone(),
                         &context,
                         &extracted_sig,
                     )?;
@@ -153,10 +153,7 @@ impl MetaItemList {
                         attrs: OutputMetaItemList::code_item_attrs(fn_item.attrs.clone()),
                         vis: fn_item.vis.clone(),
                         sig: extracted_sig,
-                        block: Box::new(Block {
-                            brace_token: Default::default(),
-                            stmts: vec![Stmt::Expr(expr, None)],
-                        }),
+                        block: Box::new(block),
                     })));
                 }
             }
@@ -593,7 +590,7 @@ pub struct ItemFnExt {
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
     pub sig: MetaSignature,
-    pub expr: TypeLevelExpr<Expr>,
+    pub block: TypeLevelExpr<Expr, Block>,
 }
 
 impl ItemFnExt {
@@ -602,12 +599,12 @@ impl ItemFnExt {
         let sig: MetaSignature = input.parse()?;
         let content: ParseBuffer;
         braced!(content in input);
-        let expr: TypeLevelExpr<Expr> = content.parse()?;
+        let block: TypeLevelExpr<Expr, Block> = content.parse()?;
         Ok(ItemFnExt {
             attrs,
             vis,
             sig,
-            expr,
+            block,
         })
     }
 }
@@ -719,7 +716,7 @@ pub struct TraitImplItemFn {
     pub attrs: Vec<Attribute>,
     pub vis: Visibility,
     pub sig: Signature,
-    pub expr: TypeLevelExpr<Expr>,
+    pub block: TypeLevelExpr<Expr, Block>,
 }
 
 impl TraitImplItemFn {
@@ -728,12 +725,12 @@ impl TraitImplItemFn {
         let sig: Signature = input.parse()?;
         let content: ParseBuffer;
         braced!(content in input);
-        let expr: TypeLevelExpr<Expr> = content.parse()?;
+        let block: TypeLevelExpr<Expr, Block> = content.parse()?;
         Ok(TraitImplItemFn {
             attrs,
             vis,
             sig,
-            expr,
+            block,
         })
     }
 }

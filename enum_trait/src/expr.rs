@@ -51,15 +51,15 @@ impl ParseExt for Type {
 }
 
 #[derive(Clone)]
-pub enum TypeLevelExpr<E> {
-    Expr(E),
+pub enum TypeLevelExpr<E, Ex = E> {
+    Expr(Ex),
     Match(TypeLevelExprMatch<TypeLevelExpr<E>>),
 }
 
-impl<E: ParseExt> TypeLevelExpr<E> {
+impl<E: ParseExt, Ex> TypeLevelExpr<E, Ex> {
     fn parse_impl(
         input: ParseStream,
-        parse_expr: impl FnOnce(ParseStream) -> Result<E>,
+        parse_expr: impl FnOnce(ParseStream) -> Result<Ex>,
     ) -> Result<Self> {
         if input.peek(Token![match]) && (!E::has_match_expr() || input.peek2(Token![<])) {
             Ok(TypeLevelExpr::Match(input.parse()?))
@@ -72,6 +72,17 @@ impl<E: ParseExt> TypeLevelExpr<E> {
 impl<E: ParseExt> Parse for TypeLevelExpr<E> {
     fn parse(input: ParseStream) -> Result<Self> {
         Self::parse_impl(input, |input| input.parse())
+    }
+}
+
+impl<E: ParseExt> Parse for TypeLevelExpr<E, Block> {
+    fn parse(input: ParseStream) -> Result<Self> {
+        Self::parse_impl(input, |input| {
+            Ok(Block {
+                brace_token: Default::default(),
+                stmts: input.call(Block::parse_within)?,
+            })
+        })
     }
 }
 
