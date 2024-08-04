@@ -1,4 +1,4 @@
-use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Group, Spacing, Span, TokenStream, TokenTree};
 use quote::ToTokens;
 use std::{collections::HashMap, iter};
 use syn::{parse::ParseStream, punctuated::Punctuated, spanned::Spanned, *};
@@ -184,22 +184,68 @@ pub fn check_token_equality<T: ToTokens>(actual: &T, expected: &T) -> Result<()>
     Ok(())
 }
 
-pub fn replace_tokens(stream: TokenStream, src: &Ident, dst: &impl ToTokens) -> TokenStream {
+fn is_apostrophe_token(token: &Option<TokenTree>) -> bool {
+    if let Some(TokenTree::Punct(punct)) = token {
+        punct.as_char() == '\'' && punct.spacing() == Spacing::Joint
+    } else {
+        false
+    }
+}
+
+fn replace_tokens_impl(
+    stream: TokenStream,
+    src: &Ident,
+    dst: &impl ToTokens,
+    src_is_lifetime: bool,
+) -> TokenStream {
     let mut result = TokenStream::new();
+    let mut prev_token = None;
     for token in stream {
         match token {
             TokenTree::Group(group) => {
-                let group_result = replace_tokens(group.stream(), src, dst);
+                result.extend(prev_token);
+                prev_token = None;
+                let group_result = replace_tokens_impl(group.stream(), src, dst, src_is_lifetime);
                 result.extend(iter::once(TokenTree::Group(Group::new(
                     group.delimiter(),
                     group_result,
                 ))));
             }
-            TokenTree::Ident(ident) if &ident == src => dst.to_tokens(&mut result),
-            _ => result.extend(iter::once(token)),
+            TokenTree::Ident(ident)
+                if &ident == src && is_apostrophe_token(&prev_token) == src_is_lifetime =>
+            {
+                if !src_is_lifetime {
+                    result.extend(prev_token);
+                }
+                prev_token = None;
+                dst.to_tokens(&mut result);
+            }
+            _ => {
+                result.extend(prev_token);
+                prev_token = Some(token);
+            }
         }
     }
+    result.extend(prev_token);
     result
+}
+
+pub fn replace_tokens(stream: TokenStream, src: &Ident, dst: &impl ToTokens) -> TokenStream {
+    replace_tokens_impl(stream, src, dst, false)
+}
+
+pub fn replace_param_with_tokens(
+    stream: TokenStream,
+    param: &GenericParam,
+    dst: &impl ToTokens,
+) -> TokenStream {
+    match param {
+        GenericParam::Lifetime(LifetimeParam { lifetime, .. }) => {
+            replace_tokens_impl(stream, &lifetime.ident, dst, true)
+        }
+        GenericParam::Type(TypeParam { ident, .. }) => replace_tokens(stream, ident, dst),
+        GenericParam::Const(ConstParam { ident, .. }) => replace_tokens(stream, ident, dst),
+    }
 }
 
 #[derive(Clone)]

@@ -1098,6 +1098,104 @@ impl<'a> OutputItemTraitDef<'a> {
             }
         }
     }
+
+    // Transforms each generic parameter to a macro parameter, and outputs various related tokens:
+    // * `macro_params`: List of macro parameter names, with one item for each generic parameter.
+    // * `macro_generics`: Macro parameters with token types in angle brackets, for use in a macro
+    //   signature.
+    // * `macro_generic_args`: Like `macro_generics` but without token types, for the purpose of
+    //   passing the parameters in `macro_generics` to another macro with the same signature.
+    // * `macro_generic_default_args`: The macro arguments to use for the original parameter names,
+    //   i.e. actually the same as `generics.to_tokens` (but that is an implementation detail).
+    // * `macro_deafult_args`: Same as `macro_generic_default_args` but as a hash map.
+    fn generics_to_macro_params(
+        original_generics: &Generics,
+        renamed_generics: &Generics,
+        macro_params: &mut Vec<TokenStream>,
+        macro_generics: &mut TokenStream,
+        macro_generic_args: &mut TokenStream,
+        macro_generic_default_args: &mut TokenStream,
+        macro_default_args: &mut HashMap<Ident, MacroArg>,
+    ) {
+        if !original_generics.params.is_empty() {
+            let mut params = Vec::new();
+            let mut args = Vec::new();
+            let mut default_args = Vec::new();
+
+            for (original_param, renamed_param) in original_generics
+                .params
+                .iter()
+                .zip(renamed_generics.params.iter())
+            {
+                match (original_param, renamed_param) {
+                    (
+                        GenericParam::Lifetime(LifetimeParam {
+                            lifetime: original_lifetime,
+                            ..
+                        }),
+                        GenericParam::Lifetime(LifetimeParam { lifetime, .. }),
+                    ) => {
+                        let ident = &lifetime.ident;
+                        let macro_param = quote!($#ident);
+                        params.push(quote!(#macro_param:lifetime));
+                        args.push(quote!(#macro_param));
+                        default_args.push(original_lifetime.to_token_stream());
+                        macro_default_args
+                            .insert(ident.clone(), MacroArg::single(&original_lifetime));
+                        macro_params.push(macro_param);
+                    }
+                    (
+                        GenericParam::Type(TypeParam {
+                            ident: original_ident,
+                            ..
+                        }),
+                        GenericParam::Type(TypeParam { ident, .. }),
+                    ) => {
+                        let macro_param = quote!($#ident);
+                        params.push(quote!(#macro_param:ident));
+                        args.push(quote!(#macro_param));
+                        default_args.push(original_ident.to_token_stream());
+                        macro_default_args
+                            .insert(ident.clone(), MacroArg::ident(original_ident.clone()));
+                        macro_params.push(macro_param);
+                    }
+                    (
+                        GenericParam::Const(ConstParam {
+                            ident: original_ident,
+                            ..
+                        }),
+                        GenericParam::Const(ConstParam { ident, .. }),
+                    ) => {
+                        let macro_param = quote!($#ident);
+                        params.push(quote!(#macro_param:ident));
+                        args.push(quote!(#macro_param));
+                        default_args.push(original_ident.to_token_stream());
+                        macro_default_args
+                            .insert(ident.clone(), MacroArg::ident(original_ident.clone()));
+                        macro_params.push(macro_param);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            original_generics.lt_token.to_tokens(macro_generics);
+            macro_generics.append_separated(params, <Token![,]>::default());
+            macro_generics.extend(quote!($(,)?));
+            original_generics.gt_token.to_tokens(macro_generics);
+
+            original_generics.lt_token.to_tokens(macro_generic_args);
+            macro_generic_args.append_separated(args, <Token![,]>::default());
+            original_generics.gt_token.to_tokens(macro_generic_args);
+
+            original_generics
+                .lt_token
+                .to_tokens(macro_generic_default_args);
+            macro_generic_default_args.append_separated(default_args, <Token![,]>::default());
+            original_generics
+                .gt_token
+                .to_tokens(macro_generic_default_args);
+        }
+    }
 }
 
 impl ToTokens for OutputItemTraitDef<'_> {
@@ -1291,7 +1389,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
         let mut impl_body_macro_contents = TokenStream::new();
         let part_param_ident = Ident::new("_Part", Span::call_site());
         let part_param = quote!($#part_param_ident);
-        let mut macro_args = macro_args_base;
+        let mut macro_default_args = macro_args_base;
         if let Some(variants) = &self.variants {
             for (variant_idx, output_variant) in variants.iter().enumerate() {
                 let mut full_variant_impl_body = TokenStream::new();
@@ -1313,100 +1411,75 @@ impl ToTokens for OutputItemTraitDef<'_> {
                 }
 
                 let variant = &output_variant.variant.variant;
-                let mut macro_generic_params = Vec::new();
-                let mut macro_generic_args = Vec::new();
-                let mut macro_generic_default_args = Vec::new();
-                let mut impl_generic_params: Vec<TokenStream> = output_variant
-                    .variant
-                    .impl_generics
+                let param_prefix = format!("Var_{variant_idx}_");
+                let mut renamed_variant_impl_generics =
+                    output_variant.variant.impl_generics.clone();
+                add_prefix_to_all_params(&mut renamed_variant_impl_generics, &param_prefix)
+                    .unwrap();
+                let mut variant_impl_params = Vec::new();
+                let mut variant_impl_generics = TokenStream::new();
+                let mut variant_impl_generic_args = TokenStream::new();
+                let mut variant_impl_generic_default_args = TokenStream::new();
+                Self::generics_to_macro_params(
+                    &output_variant.variant.impl_generics,
+                    &renamed_variant_impl_generics,
+                    &mut variant_impl_params,
+                    &mut variant_impl_generics,
+                    &mut variant_impl_generic_args,
+                    &mut variant_impl_generic_default_args,
+                    &mut macro_default_args,
+                );
+                let mut renamed_variant_generics = variant.generics.clone();
+                renamed_variant_generics
+                    .substitute_all_params(
+                        &output_variant.variant.impl_generics,
+                        &renamed_variant_impl_generics,
+                    )
+                    .unwrap();
+                add_prefix_to_all_params(&mut renamed_variant_generics, &param_prefix).unwrap();
+                let mut variant_params = Vec::new();
+                let mut variant_generics = TokenStream::new();
+                let mut variant_generic_args = TokenStream::new();
+                let mut variant_generic_default_args = TokenStream::new();
+                Self::generics_to_macro_params(
+                    &variant.generics,
+                    &renamed_variant_generics,
+                    &mut variant_params,
+                    &mut variant_generics,
+                    &mut variant_generic_args,
+                    &mut variant_generic_default_args,
+                    &mut macro_default_args,
+                );
+                let generalize_variant = |mut tokens| {
+                    for (param, macro_param) in renamed_variant_impl_generics
+                        .params
+                        .iter()
+                        .zip(variant_impl_params.iter())
+                    {
+                        tokens = replace_param_with_tokens(tokens, param, macro_param);
+                    }
+                    for (param, macro_param) in renamed_variant_generics
+                        .params
+                        .iter()
+                        .zip(variant_params.iter())
+                    {
+                        tokens = replace_param_with_tokens(tokens, param, macro_param);
+                    }
+                    generalize(tokens)
+                };
+                let impl_generic_params: Vec<TokenStream> = renamed_variant_impl_generics
                     .params
                     .iter()
-                    .map(|param| generalize(param.to_token_stream()))
+                    .chain(renamed_variant_generics.params.iter())
+                    .map(|param| generalize_variant(param.to_token_stream()))
                     .collect();
-                let mut impl_generic_args = Vec::new();
-                let param_prefix = format!("Var_{variant_idx}_");
-                for param in &variant.generics.params {
-                    match param {
-                        GenericParam::Lifetime(LifetimeParam {
-                            attrs: _,
-                            lifetime,
-                            colon_token,
-                            bounds,
-                        }) => {
-                            let macro_param_ident =
-                                ident_with_prefix(&lifetime.ident, &param_prefix, true);
-                            let macro_param = quote!($#macro_param_ident);
-                            macro_generic_params.push(quote!(#macro_param:lifetime));
-                            macro_generic_args.push(quote!(#macro_param));
-                            macro_generic_default_args.push(lifetime.to_token_stream());
-                            impl_generic_params.push(quote!(#macro_param #colon_token #bounds));
-                            impl_generic_args.push(quote!(#macro_param));
-                            macro_args.insert(macro_param_ident, MacroArg::single(&lifetime));
-                        }
-                        GenericParam::Type(TypeParam {
-                            attrs: _,
-                            ident,
-                            colon_token,
-                            bounds,
-                            eq_token,
-                            default,
-                        }) => {
-                            let macro_param_ident = ident_with_prefix(ident, &param_prefix, true);
-                            let macro_param = quote!($#macro_param_ident);
-                            macro_generic_params.push(quote!(#macro_param:ident));
-                            macro_generic_args.push(quote!(#macro_param));
-                            macro_generic_default_args.push(ident.to_token_stream());
-                            let generalized_bounds = generalize(bounds.to_token_stream());
-                            impl_generic_params.push(
-                                quote!(#macro_param #colon_token #generalized_bounds #eq_token #default),
-                            );
-                            impl_generic_args.push(quote!(#macro_param));
-                            macro_args.insert(macro_param_ident, MacroArg::ident(ident.clone()));
-                        }
-                        GenericParam::Const(ConstParam {
-                            attrs: _,
-                            const_token,
-                            ident,
-                            colon_token,
-                            ty,
-                            eq_token,
-                            default,
-                        }) => {
-                            let macro_param_ident = ident_with_prefix(ident, &param_prefix, true);
-                            let macro_param = quote!($#macro_param_ident);
-                            macro_generic_params.push(quote!(#macro_param:ident));
-                            macro_generic_args.push(quote!(#macro_param));
-                            macro_generic_default_args.push(ident.to_token_stream());
-                            impl_generic_params.push(
-                                quote!(#const_token #macro_param #colon_token #ty #eq_token #default),
-                            );
-                            impl_generic_args.push(quote!(#macro_param));
-                            macro_args.insert(macro_param_ident, MacroArg::ident(ident.clone()));
-                        }
-                    }
-                }
-                let mut macro_generics = TokenStream::new();
-                let mut macro_arg_generics = TokenStream::new();
-                let mut macro_default_arg_generics = TokenStream::new();
-                if !macro_generic_params.is_empty() {
-                    variant.generics.lt_token.to_tokens(&mut macro_generics);
-                    macro_generics.append_separated(macro_generic_params, <Token![,]>::default());
-                    macro_generics.extend(quote!($(,)?));
-                    variant.generics.gt_token.to_tokens(&mut macro_generics);
-                    variant.generics.lt_token.to_tokens(&mut macro_arg_generics);
-                    macro_arg_generics.append_separated(macro_generic_args, <Token![,]>::default());
-                    variant.generics.gt_token.to_tokens(&mut macro_arg_generics);
-                    variant
-                        .generics
-                        .lt_token
-                        .to_tokens(&mut macro_default_arg_generics);
-                    macro_default_arg_generics
-                        .append_separated(macro_generic_default_args, <Token![,]>::default());
-                    variant
-                        .generics
-                        .gt_token
-                        .to_tokens(&mut macro_default_arg_generics);
-                }
+                let impl_generic_args: Vec<TokenStream> = renamed_variant_generics
+                    .params
+                    .iter()
+                    .map(|param| {
+                        generalize_variant(generic_param_arg(param, None).to_token_stream())
+                    })
+                    .collect();
                 let body_param_ident =
                     Ident::new(&format!("{param_prefix}_Body"), Span::call_site());
                 let body_param = quote!($#body_param_ident);
@@ -1415,17 +1488,23 @@ impl ToTokens for OutputItemTraitDef<'_> {
                     $(#body_param)*
                 };
                 let variant_ident = &variant.ident;
-                macro_variant_params.extend(quote!(#variant_ident #macro_generics => {
-                    $(#body_param:tt)*
-                }));
-                macro_variant_args.extend(quote!(#variant_ident #macro_arg_generics => {
-                    #variant_impl_body
-                }));
-                full_macro_variant_args.extend(quote!(#variant_ident #macro_arg_generics => {
-                    #full_variant_impl_body
-                }));
+                macro_variant_params.extend(
+                    quote!(#variant_impl_generics #variant_ident #variant_generics => {
+                        $(#body_param:tt)*
+                    }),
+                );
+                macro_variant_args.extend(
+                    quote!(#variant_impl_generic_args #variant_ident #variant_generic_args => {
+                        #variant_impl_body
+                    }),
+                );
+                full_macro_variant_args.extend(
+                    quote!(#variant_impl_generic_args #variant_ident #variant_generic_args => {
+                        #full_variant_impl_body
+                    }),
+                );
                 macro_variant_default_args
-                    .extend(quote!(#variant_ident #macro_default_arg_generics => {}));
+                    .extend(quote!(#variant_impl_generic_default_args #variant_ident #variant_generic_default_args => {}));
                 let mut impl_generics = TokenStream::new();
                 if !impl_generic_params.is_empty() {
                     variant
@@ -1440,7 +1519,14 @@ impl ToTokens for OutputItemTraitDef<'_> {
                         .or(self.trait_def.generics.gt_token)
                         .to_tokens(&mut impl_generics);
                 }
-                let trait_generic_args = &output_variant.variant.trait_args;
+                let mut trait_generic_args = output_variant.variant.trait_args.clone();
+                trait_generic_args
+                    .substitute_all_params(
+                        &output_variant.variant.impl_generics,
+                        &renamed_variant_impl_generics,
+                    )
+                    .unwrap();
+                let trait_generic_args = generalize_variant(trait_generic_args.to_token_stream());
                 let mut impl_args = TokenStream::new();
                 if !impl_generic_args.is_empty() {
                     variant.generics.lt_token.to_tokens(&mut impl_args);
@@ -1515,7 +1601,7 @@ impl ToTokens for OutputItemTraitDef<'_> {
         // currently doesn't seem to expand such invocations transparently enough, so that IDE
         // navigation fails. Therefore, we expand the macro ourselves, essentially duplicating
         // its contents in our output.
-        tokens.extend(expand_macro_body(full_macro_body, &macro_args));
+        tokens.extend(expand_macro_body(full_macro_body, &macro_default_args));
     }
 }
 

@@ -704,6 +704,30 @@ fn add_underscores_if_conflicting(
     }
 }
 
+pub fn add_prefix_to_all_params(generics: &mut Generics, prefix: &str) -> Result<()> {
+    for param_idx in 0..generics.params.len() {
+        let param = &mut generics.params[param_idx];
+        let old_param = param.clone();
+        match param {
+            GenericParam::Lifetime(lifetime_param) => {
+                lifetime_param.lifetime.ident =
+                    ident_with_prefix(&lifetime_param.lifetime.ident, prefix, true);
+            }
+            GenericParam::Type(type_param) => {
+                type_param.ident = ident_with_prefix(&type_param.ident, prefix, true);
+            }
+            GenericParam::Const(const_param) => {
+                const_param.ident = ident_with_prefix(&const_param.ident, prefix, true);
+            }
+        }
+        let new_param = param.clone();
+        let mut subst = ParamSubst::new(&old_param, ParamSubstArg::Param(&new_param));
+        subst.visit_generics_mut(generics);
+        subst.result?;
+    }
+    Ok(())
+}
+
 // Produces the data that is necessary to extract `expr` into a new object with its own generic
 // parameters: For all parameters from `context` that are referenced in `expr`, adds a corresponding
 // parameter to the returned `Generics` and a corresponding argument to the returned
