@@ -1,4 +1,4 @@
-// Check that the `MetaNum` trait can be used conventiently, and that the `meta_num` macro can be
+// Check that the `MetaNum` trait can be used conveniently, and that the `meta_num` macro can be
 // called outside of `enum_trait_core`.
 
 use std::marker::PhantomData;

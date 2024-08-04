@@ -404,7 +404,8 @@ impl ItemTraitDef {
                     *part_ident = Some(self_type_ident(None));
                 }
             } else if !dependent_idents.contains(&segment.ident)
-                && self.are_path_arguments_dependent(&segment.arguments)
+                && (self.is_super_trait_ident(&segment.ident)
+                    || self.are_path_arguments_dependent(&segment.arguments))
             {
                 dependent_idents.push(segment.ident.clone());
             }
@@ -412,6 +413,18 @@ impl ItemTraitDef {
         if part_ident.is_none() && self.generics.contained_in_path(path, true) {
             *part_ident = Some(self_type_ident(None));
         }
+    }
+
+    fn is_super_trait_ident(&self, ident: &Ident) -> bool {
+        if let TraitContents::Alias { path } = &self.contents {
+            if path.leading_colon.is_none()
+                && path.segments.len() == 1
+                && path.segments.first().unwrap() == ident
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn are_path_arguments_dependent(&self, arguments: &PathArguments) -> bool {
